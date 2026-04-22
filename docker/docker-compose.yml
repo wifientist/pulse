@@ -1,0 +1,18 @@
+services:
+  pulse-server:
+    build:
+      context: ..
+      dockerfile: docker/server.Dockerfile
+    image: pulse-server:dev
+    restart: unless-stopped
+    env_file:
+      - ../.env
+    environment:
+      PULSE_DB_PATH: /data/pulse.sqlite
+    volumes:
+      - pulse-data:/data
+    ports:
+      - "8080:8080"
+
+volumes:
+  pulse-data:

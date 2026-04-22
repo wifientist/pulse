@@ -1,0 +1,96 @@
+"""Peer-assignment computation.
+
+v1 policy: full mesh of all ACTIVE agents. Every ordered pair becomes a peer_assignment
+with `source='auto'`. Admin-created `source='manual'` rows are preserved across
+recomputes and never replaced. Disabled rows stay disabled.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from pulse_server.db.models import Agent, PeerAssignment
+from pulse_server.repo import meta_repo
+from pulse_shared.enums import AgentState
+
+
+@dataclass(frozen=True)
+class RecomputeSummary:
+    version: int
+    added: int
+    removed: int
+    kept: int
+
+
+async def recompute_full_mesh(db: AsyncSession) -> RecomputeSummary:
+    active = (
+        (await db.execute(select(Agent).where(Agent.state == AgentState.ACTIVE.value)))
+        .scalars()
+        .all()
+    )
+    by_id = {a.id: a for a in active}
+
+    existing = (await db.execute(select(PeerAssignment))).scalars().all()
+    existing_by_pair = {(pa.source_agent_id, pa.target_agent_id): pa for pa in existing}
+
+    desired_pairs = {(s.id, t.id) for s in active for t in active if s.id != t.id}
+
+    added = 0
+    removed = 0
+    kept = 0
+
+    # 1. Insert any missing auto pairs; refresh snapshotted target IP on existing.
+    for pair in desired_pairs:
+        src_id, tgt_id = pair
+        existing_row = existing_by_pair.get(pair)
+        target_ip = by_id[tgt_id].primary_ip or ""
+        if existing_row is None:
+            db.add(
+                PeerAssignment(
+                    source_agent_id=src_id,
+                    target_agent_id=tgt_id,
+                    target_ip=target_ip,
+                    interval_s=None,
+                    enabled=True,
+                    source="auto",
+                )
+            )
+            added += 1
+        else:
+            # Keep manual rows as-is except refresh the IP so the agent sees the latest.
+            if existing_row.target_ip != target_ip and target_ip:
+                existing_row.target_ip = target_ip
+            kept += 1
+
+    # 2. Delete auto rows whose endpoints are no longer active. Never touch manual rows.
+    for (src_id, tgt_id), pa in existing_by_pair.items():
+        if (src_id, tgt_id) in desired_pairs:
+            continue
+        if pa.source == "manual":
+            continue
+        await db.delete(pa)
+        removed += 1
+
+    version = await meta_repo.bump(db, meta_repo.PEER_ASSIGNMENTS_VERSION)
+    await db.commit()
+    return RecomputeSummary(version=version, added=added, removed=removed, kept=kept)
+
+
+async def assignments_for_source(
+    db: AsyncSession, source_agent_id: int
+) -> list[PeerAssignment]:
+    return list(
+        (
+            await db.execute(
+                select(PeerAssignment).where(
+                    PeerAssignment.source_agent_id == source_agent_id,
+                    PeerAssignment.enabled.is_(True),
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )

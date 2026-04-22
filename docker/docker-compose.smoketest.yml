@@ -1,0 +1,101 @@
+services:
+  pulse-server:
+    build:
+      context: ..
+      dockerfile: docker/server.Dockerfile
+    image: pulse-server:dev
+    environment:
+      PULSE_ADMIN_TOKEN: smoke-admin-token
+      PULSE_DB_PATH: /data/pulse.sqlite
+      PULSE_DEFAULT_POLL_INTERVAL_S: "2"
+      PULSE_DEFAULT_PING_INTERVAL_S: "1"
+      PULSE_MIN_DWELL_S: "3"
+      PULSE_RECOVERY_WINDOW_S: "3"
+    volumes:
+      - pulse-smoke-data:/data
+    ports:
+      - "18080:8080"
+    networks:
+      - shared
+
+  pulse-agent-alpha:
+    build:
+      context: ..
+      dockerfile: docker/agent.Dockerfile
+    image: pulse-agent:dev
+    depends_on:
+      - pulse-server
+    environment:
+      PULSE_SERVER_URL: http://pulse-server:8080
+      PULSE_ENROLLMENT_TOKEN: ${PULSE_ENROLLMENT_TOKEN:-}
+      PULSE_VERIFY_TLS: "false"
+      PULSE_HOSTNAME: alpha
+      PULSE_REPORTED_IP: 10.10.10.2
+    sysctls:
+      net.ipv4.ping_group_range: "0 2147483647"
+    networks:
+      shared:
+      subnet-alpha:
+        ipv4_address: 10.10.10.2
+
+  pulse-agent-bravo:
+    build:
+      context: ..
+      dockerfile: docker/agent.Dockerfile
+    image: pulse-agent:dev
+    depends_on:
+      - pulse-server
+    environment:
+      PULSE_SERVER_URL: http://pulse-server:8080
+      PULSE_ENROLLMENT_TOKEN: ${PULSE_ENROLLMENT_TOKEN:-}
+      PULSE_VERIFY_TLS: "false"
+      PULSE_HOSTNAME: bravo
+      PULSE_REPORTED_IP: 10.10.20.2
+    sysctls:
+      net.ipv4.ping_group_range: "0 2147483647"
+    networks:
+      shared:
+      subnet-bravo:
+        ipv4_address: 10.10.20.2
+
+  pulse-agent-charlie:
+    build:
+      context: ..
+      dockerfile: docker/agent.Dockerfile
+    image: pulse-agent:dev
+    depends_on:
+      - pulse-server
+    environment:
+      PULSE_SERVER_URL: http://pulse-server:8080
+      PULSE_ENROLLMENT_TOKEN: ${PULSE_ENROLLMENT_TOKEN:-}
+      PULSE_VERIFY_TLS: "false"
+      PULSE_HOSTNAME: charlie
+      PULSE_REPORTED_IP: 10.10.30.2
+    sysctls:
+      net.ipv4.ping_group_range: "0 2147483647"
+    networks:
+      shared:
+      subnet-charlie:
+        ipv4_address: 10.10.30.2
+
+networks:
+  shared:
+    driver: bridge
+  subnet-alpha:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 10.10.10.0/24
+  subnet-bravo:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 10.10.20.0/24
+  subnet-charlie:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 10.10.30.0/24
+
+volumes:
+  pulse-smoke-data:

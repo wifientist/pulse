@@ -1,0 +1,58 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "pulse"
+version = "0.1.0"
+description = "Pulse — Peer Uptime & Link Status Engine"
+requires-python = ">=3.12"
+readme = "README.md"
+dependencies = [
+    "pydantic>=2.7",
+    "pydantic-settings>=2.3",
+    "structlog>=24.1",
+]
+
+[project.optional-dependencies]
+server = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.30",
+    "sqlalchemy>=2.0.30",
+    "aiosqlite>=0.20",
+    "alembic>=1.13",
+    "apscheduler>=3.10",
+    "httpx>=0.27",
+    "argon2-cffi>=23.1",
+]
+agent = [
+    "httpx>=0.27",
+    "icmplib>=3.0.4",
+]
+dev = [
+    "pytest>=8.2",
+    "pytest-asyncio>=0.23",
+    "ruff>=0.5",
+]
+
+[project.scripts]
+pulse-server = "pulse_server.main:run"
+pulse-agent = "pulse_agent.main:run"
+
+[tool.hatch.build.targets.wheel]
+packages = [
+    "shared/pulse_shared",
+    "server/pulse_server",
+    "agent/pulse_agent",
+]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["server/pulse_server/tests", "agent/pulse_agent/tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
