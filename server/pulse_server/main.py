@@ -1,8 +1,25 @@
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI
+from fastapi.staticfiles import StaticFiles
+from starlette.exceptions import HTTPException as StarletteHTTPException
+
+
+class SPAStaticFiles(StaticFiles):
+    """StaticFiles + SPA fallback: serve index.html for any unmatched path so client-
+    side routes like /agents load correctly on hard-refresh / deep-link. API routes are
+    still preferred because they're mounted on the FastAPI app before this."""
+
+    async def get_response(self, path: str, scope):
+        try:
+            return await super().get_response(path, scope)
+        except StarletteHTTPException as e:
+            if e.status_code == 404:
+                return await super().get_response("index.html", scope)
+            raise
 
 from pulse_server.config import Settings, load_settings
 from pulse_server.db.engine import build_engine, build_sessionmaker
@@ -12,6 +29,7 @@ from pulse_server.routers import (
     alerts,
     debug,
     enrollment,
+    events,
     groups,
     health,
     peers,
@@ -57,13 +75,24 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(enrollment.router)
     app.include_router(telemetry.router)
     app.include_router(agents.router)
+    app.include_router(agents.agent_package_router)
     app.include_router(groups.router)
     app.include_router(tags.router)
     app.include_router(peers.router)
     app.include_router(tests.router)
     app.include_router(webhooks.router)
     app.include_router(alerts.router)
+    app.include_router(events.router)
     app.include_router(debug.router)
+
+    # Serve the built web UI at "/" when present. Must be mounted AFTER all routers so
+    # /v1/* and /healthz take precedence. In dev the Vite dev server serves the UI
+    # directly and this mount is a no-op (web_dist_dir unset or directory absent).
+    if settings.web_dist_dir:
+        dist = Path(settings.web_dist_dir)
+        if dist.is_dir():
+            app.mount("/", SPAStaticFiles(directory=dist, html=True), name="spa")
+            log.info("spa.mounted", dist=str(dist))
 
     return app
 

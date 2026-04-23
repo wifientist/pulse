@@ -70,6 +70,19 @@ class CommandResult(BaseModel):
     error: str | None = None
 
 
+class AgentInterface(BaseModel):
+    """One network interface on the agent's host, reported on every poll.
+
+    MAC is the stable identifier (doesn't change across reboots or DHCP renewals).
+    `ip` is the current IPv4 address the interface holds — may be None if the interface
+    is down. `iface_name` is informational (e.g. `eth1`, `ens20`).
+    """
+
+    mac: str
+    ip: str | None = None
+    iface_name: str | None = None
+
+
 class PollRequest(BaseModel):
     agent_uid: str
     now_ms: int
@@ -79,6 +92,9 @@ class PollRequest(BaseModel):
     command_results: list[CommandResult] = Field(default_factory=list)
     peers_version_seen: int = 0
     dropped_samples_since_last: int = 0
+    # Optional so older agents (pre-0.2.0) keep working — they just won't get MAC-
+    # tracking benefits until they're upgraded.
+    interfaces: list[AgentInterface] = Field(default_factory=list)
 
 
 class PeerAssignment(BaseModel):

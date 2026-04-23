@@ -1,0 +1,29 @@
+@import "tailwindcss";
+
+/* @xyflow/react's built-in styles — needed for nodes/edges to render correctly. */
+@import "@xyflow/react/dist/style.css";
+
+/* The `source` directive makes v4 scan these paths for utilities in addition to the
+   auto-detected ones. Explicit so it's obvious where utilities come from. */
+@source "../index.html";
+@source "./**/*.{ts,tsx}";
+
+@layer base {
+  /* Full-height shell + force light color-scheme so browser dark-mode doesn't re-theme
+     form controls to dark-gray-on-dark-gray. v4 ships `scheme-only-light` natively. */
+  html,
+  body,
+  #root {
+    @apply h-full scheme-only-light;
+  }
+
+  /* Form input reset. Without this, some browsers (Chrome w/ prefers-color-scheme:
+     dark, Firefox HCM, "dark reader"-type extensions) repaint inputs to their native
+     dark palette even though the page is light. Applying utilities to element
+     selectors inside @layer base is the Tailwind-sanctioned way to do this globally. */
+  input,
+  textarea,
+  select {
+    @apply bg-white text-slate-900 placeholder:text-slate-400;
+  }
+}

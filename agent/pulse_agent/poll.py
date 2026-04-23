@@ -9,10 +9,12 @@ import time
 import httpx
 
 from pulse_agent.dispatcher import Dispatcher
+from pulse_agent.interfaces import enumerate_interfaces
 from pulse_agent.pinger.scheduler import PeerSpec, PingScheduler
 from pulse_agent.state import AgentRuntimeState
 from pulse_shared.contracts import (
     AgentCaps,
+    AgentInterface,
     CommandResult,
     PingSample,
     PollRequest,
@@ -72,6 +74,18 @@ class PollLoop:
         results = list(self._state.pending_results)
         self._state.pending_results.clear()
 
+        # Enumerate interfaces every tick. psutil's calls are cheap (~microseconds)
+        # and running it every poll means DHCP IP changes propagate to the server
+        # within one poll interval.
+        try:
+            ifaces = [
+                AgentInterface(mac=i.mac, ip=i.ip, iface_name=i.iface_name)
+                for i in enumerate_interfaces()
+            ]
+        except Exception:  # noqa: BLE001
+            log.exception("agent.interface_enumeration_failed")
+            ifaces = []
+
         req = PollRequest(
             agent_uid=self._agent_uid,
             now_ms=int(time.time() * 1000),
@@ -90,6 +104,7 @@ class PollLoop:
             command_results=results,
             peers_version_seen=self._state.peers_version_seen,
             dropped_samples_since_last=dropped,
+            interfaces=ifaces,
         )
 
         r = await self._http.post("/v1/agent/poll", json=req.model_dump())

@@ -53,6 +53,32 @@ class Agent(Base):
     agent_version: Mapped[str | None] = mapped_column(String(32), nullable=True)
 
 
+class AgentInterface(Base):
+    """Per-agent network interface, keyed by MAC.
+
+    Agents enumerate their own interfaces (via psutil) on every poll and ship the list
+    up. MAC is the stable identifier across DHCP changes; `current_ip` is whatever that
+    MAC currently holds. `role` is admin-assigned: `test` interfaces have their IP
+    snapshotted into peer_assignments.target_ip for inbound pings; `management` and
+    `ignored` are informational; `unknown` is the default until admin classifies.
+    """
+
+    __tablename__ = "agent_interfaces"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    agent_id: Mapped[int] = mapped_column(ForeignKey("agents.id"), index=True)
+    mac: Mapped[str] = mapped_column(String(17))
+    current_ip: Mapped[str | None] = mapped_column(String(45), nullable=True)
+    iface_name: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    role: Mapped[str] = mapped_column(String(16), default="unknown")
+    first_seen: Mapped[int] = mapped_column(Integer)
+    last_seen: Mapped[int] = mapped_column(Integer)
+
+    __table_args__ = (
+        UniqueConstraint("agent_id", "mac", name="uq_agent_interfaces_agent_mac"),
+    )
+
+
 class EnrollmentToken(Base):
     __tablename__ = "enrollment_tokens"
 

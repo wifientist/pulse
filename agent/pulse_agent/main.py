@@ -23,15 +23,17 @@ from pulse_agent.pinger import build_pinger
 from pulse_agent.pinger.scheduler import PingScheduler
 from pulse_agent.platform.detect import detect
 from pulse_agent.poll import PollLoop
+from pulse_agent.probes import dhcp_renew as dhcp_renew_probe
 from pulse_agent.probes import dns as dns_probe
 from pulse_agent.probes import http_check as http_probe
 from pulse_agent.probes import iperf3_client as iperf3_client_probe
 from pulse_agent.probes import iperf3_server as iperf3_server_probe
+from pulse_agent.probes import self_upgrade as self_upgrade_probe
 from pulse_agent.probes import tcp_port as tcp_probe
 from pulse_shared.enums import CommandType
 from pulse_agent.state import AgentRuntimeState, detect_hostname, detect_primary_ip
 from pulse_shared.contracts import AgentCaps
-from pulse_shared.version import PROTOCOL_VERSION
+from pulse_shared.version import AGENT_VERSION, PROTOCOL_VERSION
 
 
 def _configure_logging(level: str) -> None:
@@ -55,7 +57,7 @@ async def _main(settings: AgentSettings) -> int:
         raw_icmp=caps_platform.raw_icmp,
         container=caps_platform.container,
         iperf3_available=caps_platform.iperf3_available,
-        agent_version="0.1.0",
+        agent_version=AGENT_VERSION,
         protocol_version=PROTOCOL_VERSION,
     )
 
@@ -75,6 +77,8 @@ async def _main(settings: AgentSettings) -> int:
     dispatcher.register(CommandType.IPERF3_SERVER_START, iperf3_server_probe.build_start(state))
     dispatcher.register(CommandType.IPERF3_SERVER_STOP, iperf3_server_probe.build_stop(state))
     dispatcher.register(CommandType.IPERF3_CLIENT, iperf3_client_probe.run)
+    dispatcher.register(CommandType.DHCP_RENEW, dhcp_renew_probe.run)
+    dispatcher.register(CommandType.SELF_UPGRADE, self_upgrade_probe.run)
 
     async with build_http(
         settings.server_url, bearer=token.agent_token, verify=settings.verify_tls

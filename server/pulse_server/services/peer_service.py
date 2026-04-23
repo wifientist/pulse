@@ -12,9 +12,29 @@ from dataclasses import dataclass
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from pulse_server.db.models import Agent, PeerAssignment
+from pulse_server.db.models import Agent, AgentInterface, PeerAssignment
 from pulse_server.repo import meta_repo
 from pulse_shared.enums import AgentState
+
+
+async def _target_ip_for_agent(db: AsyncSession, agent: Agent) -> str:
+    """Resolve the IP other agents should ping to reach `agent`.
+
+    Prefer the agent's primary_test interface's current_ip (MAC-tracked, survives DHCP
+    churn). Fall back to `Agent.primary_ip` (the legacy agent-reported field) for
+    agents that predate the interfaces feature.
+    """
+    primary = (
+        await db.execute(
+            select(AgentInterface).where(
+                AgentInterface.agent_id == agent.id,
+                AgentInterface.role == "test",
+            )
+        )
+    ).scalar_one_or_none()
+    if primary is not None and primary.current_ip:
+        return primary.current_ip
+    return agent.primary_ip or ""
 
 
 @dataclass(frozen=True)
@@ -46,7 +66,7 @@ async def recompute_full_mesh(db: AsyncSession) -> RecomputeSummary:
     for pair in desired_pairs:
         src_id, tgt_id = pair
         existing_row = existing_by_pair.get(pair)
-        target_ip = by_id[tgt_id].primary_ip or ""
+        target_ip = await _target_ip_for_agent(db, by_id[tgt_id])
         if existing_row is None:
             db.add(
                 PeerAssignment(

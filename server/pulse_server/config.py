@@ -37,6 +37,10 @@ class Settings(BaseSettings):
     stale_agent_factor: float = 3.0
     """Mark an agent stale if last_poll_at is older than this × poll_interval_s."""
 
+    web_dist_dir: str | None = None
+    """Absolute path to the built web UI (web/dist/). When set and the directory exists,
+    FastAPI serves the SPA at `/`. Unset in dev (Vite dev server serves the UI directly)."""
+
     @property
     def db_url(self) -> str:
         return f"sqlite+aiosqlite:///{self.db_path}"

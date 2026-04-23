@@ -28,9 +28,17 @@ fi
 
 : "${PULSE_SERVER_URL:?PULSE_SERVER_URL is required}"
 : "${PULSE_ENROLLMENT_TOKEN:?PULSE_ENROLLMENT_TOKEN is required}"
-: "${PULSE_REPORTED_IP:?PULSE_REPORTED_IP is required}"
 : "${PULSE_HOSTNAME:=$(hostname)}"
-echo "[pulse] hostname=$PULSE_HOSTNAME reported_ip=$PULSE_REPORTED_IP"
+# PULSE_REPORTED_IP is optional — agent enumerates all interfaces by MAC and reports
+# them to the server, where admin classifies test/management/ignored in the UI. If
+# you leave it unset, the agent auto-detects a primary IP via the default-route
+# connect trick (still OK as a placeholder until admin assigns a role).
+: "${PULSE_REPORTED_IP:=}"
+if [[ -z "$PULSE_REPORTED_IP" ]]; then
+  echo "[pulse] hostname=$PULSE_HOSTNAME reported_ip=(auto-detect from interfaces)"
+else
+  echo "[pulse] hostname=$PULSE_HOSTNAME reported_ip=$PULSE_REPORTED_IP"
+fi
 
 SOURCE_TAR="${PULSE_SOURCE_TAR:-$(pwd)/pulse-source.tar.gz}"
 if [[ ! -f "$SOURCE_TAR" ]]; then
@@ -57,10 +65,32 @@ rm -rf "$SRC_DIR"
 mkdir -p "$SRC_DIR"
 tar xzf "$SOURCE_TAR" -C "$SRC_DIR" --strip-components=1
 
-echo "[pulse] creating venv at $VENV_DIR"
+echo "[pulse] creating venv at $VENV_DIR (fresh)"
+# Wipe any previous venv — re-installing on top of an old one can leave a half-baked
+# state (missing bin/pip, partial ensurepip bundle, etc). A clean venv every run is
+# cheap and reliable.
+rm -rf "$VENV_DIR"
 python3 -m venv "$VENV_DIR"
-"$VENV_DIR/bin/pip" install --upgrade --quiet pip
-"$VENV_DIR/bin/pip" install --quiet -e "$SRC_DIR[agent]"
+if [[ ! -x "$VENV_DIR/bin/pip" ]]; then
+  echo "[pulse] venv built without pip — trying ensurepip bootstrap" >&2
+  "$VENV_DIR/bin/python" -m ensurepip --upgrade
+fi
+
+# If the source tarball shipped with pre-built wheels (agent-wheels/), install fully
+# offline — pip never touches pypi. Works on air-gapped hosts or anywhere outbound to
+# pypi is blocked. Falls back to online install when the dir is absent (e.g. a lean
+# dev tarball built without the server image).
+WHEELS_DIR="$SRC_DIR/agent-wheels"
+if [[ -d "$WHEELS_DIR" ]]; then
+  echo "[pulse] offline install from $WHEELS_DIR"
+  "$VENV_DIR/bin/pip" install --no-index --find-links="$WHEELS_DIR" --upgrade --quiet pip \
+    || "$VENV_DIR/bin/pip" install --upgrade --quiet pip
+  "$VENV_DIR/bin/pip" install --no-index --find-links="$WHEELS_DIR" --quiet -e "$SRC_DIR[agent]"
+else
+  echo "[pulse] online install (no agent-wheels/ in source)"
+  "$VENV_DIR/bin/pip" install --upgrade --quiet pip
+  "$VENV_DIR/bin/pip" install --quiet -e "$SRC_DIR[agent]"
+fi
 
 echo "[pulse] preparing data dir $DATA_DIR"
 mkdir -p "$DATA_DIR"

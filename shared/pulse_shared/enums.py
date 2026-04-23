@@ -16,6 +16,8 @@ class CommandType(StrEnum):
     IPERF3_SERVER_START = "iperf3_server_start"
     IPERF3_SERVER_STOP = "iperf3_server_stop"
     IPERF3_CLIENT = "iperf3_client"
+    DHCP_RENEW = "dhcp_renew"
+    SELF_UPGRADE = "self_upgrade"
     RESTART = "restart"
     RELOAD_CONFIG = "reload_config"
 
@@ -68,6 +70,21 @@ class WebhookDeliveryState(StrEnum):
     PENDING = "pending"
     DELIVERED = "delivered"
     DEAD = "dead"
+
+
+class InterfaceRole(StrEnum):
+    """Admin-classified role for an agent's network interface.
+
+    - `test`: peers ping this interface's current IP.
+    - `management`: informational only — the agent uses this to reach the server.
+    - `ignored`: interface exists but nobody cares about it.
+    - `unknown`: freshly reported, not yet classified by admin.
+    """
+
+    TEST = "test"
+    MANAGEMENT = "management"
+    IGNORED = "ignored"
+    UNKNOWN = "unknown"
 
 
 TERMINAL_IPERF_STATES = frozenset(
