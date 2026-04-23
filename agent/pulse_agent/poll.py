@@ -61,7 +61,16 @@ class PollLoop:
                     log.error("agent.token_rejected_halting")
                     return
                 log.warning("agent.poll_http_error", extra={"status": e.response.status_code if e.response else "?"})
+            except httpx.RequestError as e:
+                # Transient network failures (server restart, network flap, DNS blip).
+                # These are expected during normal operation — log a one-liner so the
+                # journal stays readable. When the server comes back we resume polling.
+                log.warning(
+                    "agent.poll_unreachable error=%s: %s",
+                    type(e).__name__, str(e) or "(no message)",
+                )
             except Exception:  # noqa: BLE001
+                # Anything else is genuinely unexpected — keep the full traceback.
                 log.exception("agent.poll_failed")
             try:
                 await asyncio.wait_for(self._stop.wait(), timeout=self._interval_s)
@@ -79,7 +88,14 @@ class PollLoop:
         # within one poll interval.
         try:
             ifaces = [
-                AgentInterface(mac=i.mac, ip=i.ip, iface_name=i.iface_name)
+                AgentInterface(
+                    mac=i.mac,
+                    ip=i.ip,
+                    iface_name=i.iface_name,
+                    ssid=i.ssid,
+                    bssid=i.bssid,
+                    signal_dbm=i.signal_dbm,
+                )
                 for i in enumerate_interfaces()
             ]
         except Exception:  # noqa: BLE001
@@ -118,6 +134,7 @@ class PollLoop:
                     target_agent_uid=p.target_agent_uid,
                     target_ip=p.target_ip,
                     interval_s=float(p.interval_s),
+                    source_bind_ip=p.source_bind_ip,
                 )
                 for p in resp.peer_assignments
                 if p.enabled

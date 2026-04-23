@@ -9,5 +9,5 @@ field, etc). The server and UI source this too so all three stay in sync.
 server can reject mismatched clients if we ever break the contract.
 """
 
-AGENT_VERSION = "0.2.0"
+AGENT_VERSION = "0.4.0"
 PROTOCOL_VERSION = "1"

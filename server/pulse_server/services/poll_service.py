@@ -14,7 +14,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from pulse_server.config import Settings
-from pulse_server.db.models import Agent, AgentInterface
+from pulse_server.db.models import Agent, AgentInterface, WirelessSample
 from pulse_server.repo import command_repo, meta_repo, ping_repo
 from pulse_server.services import iperf3_orchestrator, peer_service, test_orchestrator
 from pulse_shared.contracts import (
@@ -73,16 +73,41 @@ async def _upsert_agent_interfaces(
                 current_ip=iface.ip,
                 iface_name=iface.iface_name,
                 role=role,
+                ssid=iface.ssid,
+                bssid=iface.bssid,
+                signal_dbm=iface.signal_dbm,
                 first_seen=now_ms,
                 last_seen=now_ms,
             )
             db.add(row)
+            # Need an id for the wireless_samples foreign key further down.
+            if iface.bssid is not None or iface.ssid is not None:
+                await db.flush()
             if role == "test":
                 has_test_role = True
         else:
             row.current_ip = iface.ip
             row.iface_name = iface.iface_name
+            row.ssid = iface.ssid
+            row.bssid = iface.bssid
+            row.signal_dbm = iface.signal_dbm
             row.last_seen = now_ms
+
+        # Wireless interfaces contribute a time-series sample on every poll so deep-
+        # dive reports can show signal distribution + detect mid-session roams.
+        # We identify "wireless" by the agent having reported bssid/ssid — wired
+        # interfaces leave these null and skip.
+        if iface.bssid is not None or iface.ssid is not None:
+            db.add(
+                WirelessSample(
+                    agent_id=agent_id,
+                    agent_interface_id=row.id,
+                    ts_ms=now_ms,
+                    ssid=iface.ssid,
+                    bssid=iface.bssid,
+                    signal_dbm=iface.signal_dbm,
+                )
+            )
 
 
 async def _primary_test_ip_changed(db: AsyncSession, agent_id: int) -> bool:
@@ -203,16 +228,72 @@ async def handle_poll(
                 )
             ).all()
             id_to_uid = {pk: uid for pk, uid in uid_rows}
+        # Boost: if this agent is in "deep-dive" boost mode (admin toggle with auto-
+        # expiry), its outbound pings all run at 1 Hz regardless of the default
+        # interval. Single per-agent lookup keeps the hot path cheap.
+        from pulse_server.services.boost_service import (
+            BOOST_PING_INTERVAL_S,
+            is_agent_boosted,
+        )
+        source_boosted = await is_agent_boosted(db, agent.id)
+
+        # Test-plane isolation: tell the agent which local IP to bind its ICMP socket
+        # to, so pings always leave via the role=test interface regardless of the
+        # host's default route. Falls back to None (kernel picks) if the agent
+        # somehow has no test interface reported yet.
+        test_iface = (
+            await db.execute(
+                select(AgentInterface).where(
+                    AgentInterface.agent_id == agent.id,
+                    AgentInterface.role == "test",
+                    AgentInterface.current_ip.is_not(None),
+                )
+            )
+        ).scalars().first()
+        source_bind_ip = test_iface.current_ip if test_iface else None
+
         peer_dtos = [
             PeerAssignmentDTO(
                 target_agent_uid=id_to_uid[r.target_agent_id],
                 target_ip=r.target_ip,
-                interval_s=r.interval_s or agent.ping_interval_s,
+                interval_s=(
+                    BOOST_PING_INTERVAL_S
+                    if source_boosted
+                    else (r.interval_s or agent.ping_interval_s)
+                ),
                 enabled=r.enabled,
+                source_bind_ip=source_bind_ip,
             )
             for r in rows
             if r.target_agent_id in id_to_uid
         ]
+
+        # Passive targets: every active agent pings every enabled passive target,
+        # delivered via the same PeerAssignment contract with a sentinel uid so
+        # the agent doesn't need protocol changes. Server-side routing on the
+        # return path lives in ping_repo.insert_samples.
+        from pulse_server.db.models import PassiveTarget
+        from pulse_server.repo.ping_repo import PASSIVE_UID_PREFIX
+
+        passive_rows = (
+            await db.execute(
+                select(PassiveTarget).where(PassiveTarget.enabled.is_(True))
+            )
+        ).scalars().all()
+        for pt in passive_rows:
+            peer_dtos.append(
+                PeerAssignmentDTO(
+                    target_agent_uid=f"{PASSIVE_UID_PREFIX}{pt.id}",
+                    target_ip=pt.ip,
+                    interval_s=(
+                        BOOST_PING_INTERVAL_S
+                        if source_boosted
+                        else agent.ping_interval_s
+                    ),
+                    enabled=True,
+                    source_bind_ip=source_bind_ip,
+                )
+            )
 
     await db.commit()
 

@@ -23,9 +23,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from pulse_server.config import Settings
 from pulse_server.db.models import (
+    PassivePingAggregateHour,
+    PassivePingAggregateMinute,
+    PassivePingSampleRaw,
     PingAggregateHour,
     PingAggregateMinute,
     PingSampleRaw,
+    WirelessSample,
 )
 from pulse_server.repo import meta_repo
 
@@ -89,7 +93,11 @@ async def rollup_minute(db: AsyncSession, now_ms: int | None = None) -> MinuteRo
     if last_rolled == 0:
         start_bucket = oldest_bucket
     else:
-        start_bucket = min(last_rolled + MINUTE_MS, oldest_bucket)
+        # Advance only — never regress to `oldest_bucket` behind the cursor,
+        # which was re-rolling days of retained raw samples every tick and
+        # choking the DB. Late samples that arrive into a bucket we've
+        # already processed are lost (rare; raw retention caps the risk).
+        start_bucket = last_rolled + MINUTE_MS
 
     if start_bucket >= latest_complete_end:
         return MinuteRollupSummary(0, 0)
@@ -127,7 +135,9 @@ async def rollup_minute(db: AsyncSession, now_ms: int | None = None) -> MinuteRo
         rtt_avg = (
             sum(rtts_sorted_by_ts) / len(rtts_sorted_by_ts) if rtts_sorted_by_ts else None
         )
+        rtt_p50 = _percentile(rtts_sorted_by_ts, 0.50) if rtts_sorted_by_ts else None
         rtt_p95 = _percentile(rtts_sorted_by_ts, 0.95) if rtts_sorted_by_ts else None
+        rtt_p99 = _percentile(rtts_sorted_by_ts, 0.99) if rtts_sorted_by_ts else None
         jitter = _jitter(rtts_sorted_by_ts)
         payload.append(
             {
@@ -139,7 +149,9 @@ async def rollup_minute(db: AsyncSession, now_ms: int | None = None) -> MinuteRo
                 "rtt_avg": rtt_avg,
                 "rtt_min": rtt_min,
                 "rtt_max": rtt_max,
+                "rtt_p50": rtt_p50,
                 "rtt_p95": rtt_p95,
+                "rtt_p99": rtt_p99,
                 "jitter_ms": jitter,
             }
         )
@@ -154,7 +166,9 @@ async def rollup_minute(db: AsyncSession, now_ms: int | None = None) -> MinuteRo
                 "rtt_avg": stmt.excluded.rtt_avg,
                 "rtt_min": stmt.excluded.rtt_min,
                 "rtt_max": stmt.excluded.rtt_max,
+                "rtt_p50": stmt.excluded.rtt_p50,
                 "rtt_p95": stmt.excluded.rtt_p95,
+                "rtt_p99": stmt.excluded.rtt_p99,
                 "jitter_ms": stmt.excluded.jitter_ms,
             },
         )
@@ -165,10 +179,93 @@ async def rollup_minute(db: AsyncSession, now_ms: int | None = None) -> MinuteRo
             db, meta_repo.LAST_MINUTE_BUCKET_ROLLED, latest_complete_end - MINUTE_MS
         )
     await db.commit()
+
+    # Passive targets use the same cadence + cursor — roll any of their samples
+    # in the same window so their minute aggregates populate in lockstep with
+    # the agent mesh.
+    passive_written = await _rollup_passive_minute(db, start_bucket, latest_complete_end)
+    if passive_written:
+        await db.commit()
+
     return MinuteRollupSummary(
         buckets_rolled=len(buckets),
-        aggregates_written=len(payload),
+        aggregates_written=len(payload) + passive_written,
     )
+
+
+async def _rollup_passive_minute(
+    db: AsyncSession, start_bucket: int, latest_complete_end: int,
+) -> int:
+    rows = (
+        await db.execute(
+            select(
+                PassivePingSampleRaw.source_agent_id,
+                PassivePingSampleRaw.passive_target_id,
+                PassivePingSampleRaw.ts_ms,
+                PassivePingSampleRaw.rtt_ms,
+                PassivePingSampleRaw.lost,
+            )
+            .where(
+                PassivePingSampleRaw.ts_ms >= start_bucket,
+                PassivePingSampleRaw.ts_ms < latest_complete_end,
+            )
+            .order_by(PassivePingSampleRaw.ts_ms)
+        )
+    ).all()
+    if not rows:
+        return 0
+
+    buckets: dict[tuple[int, int, int], list[tuple[int, float | None, bool]]] = {}
+    for source, target, ts, rtt, lost in rows:
+        bucket = (ts // MINUTE_MS) * MINUTE_MS
+        buckets.setdefault((source, target, bucket), []).append((ts, rtt, lost))
+
+    payload: list[dict] = []
+    for (src, tgt, bucket), samples in buckets.items():
+        sent = len(samples)
+        lost = sum(1 for _, _, l in samples if l)
+        rtts = [r for _, r, l in samples if r is not None]
+        rtt_min = min(rtts) if rtts else None
+        rtt_max = max(rtts) if rtts else None
+        rtt_avg = sum(rtts) / len(rtts) if rtts else None
+        rtt_p50 = _percentile(rtts, 0.50) if rtts else None
+        rtt_p95 = _percentile(rtts, 0.95) if rtts else None
+        rtt_p99 = _percentile(rtts, 0.99) if rtts else None
+        jitter = _jitter(rtts)
+        payload.append(
+            {
+                "source_agent_id": src,
+                "passive_target_id": tgt,
+                "bucket_ts_ms": bucket,
+                "sent": sent,
+                "lost": lost,
+                "rtt_avg": rtt_avg,
+                "rtt_min": rtt_min,
+                "rtt_max": rtt_max,
+                "rtt_p50": rtt_p50,
+                "rtt_p95": rtt_p95,
+                "rtt_p99": rtt_p99,
+                "jitter_ms": jitter,
+            }
+        )
+    if payload:
+        stmt = sqlite_insert(PassivePingAggregateMinute).values(payload)
+        stmt = stmt.on_conflict_do_update(
+            index_elements=["source_agent_id", "passive_target_id", "bucket_ts_ms"],
+            set_={
+                "sent": stmt.excluded.sent,
+                "lost": stmt.excluded.lost,
+                "rtt_avg": stmt.excluded.rtt_avg,
+                "rtt_min": stmt.excluded.rtt_min,
+                "rtt_max": stmt.excluded.rtt_max,
+                "rtt_p50": stmt.excluded.rtt_p50,
+                "rtt_p95": stmt.excluded.rtt_p95,
+                "rtt_p99": stmt.excluded.rtt_p99,
+                "jitter_ms": stmt.excluded.jitter_ms,
+            },
+        )
+        await db.execute(stmt)
+    return len(payload)
 
 
 @dataclass(frozen=True)
@@ -229,7 +326,16 @@ async def rollup_hour(db: AsyncSession, now_ms: int | None = None) -> HourRollup
         rtt_avg = sum(rtts) / len(rtts) if rtts else None
         rtt_min = min((m.rtt_min for m in mins if m.rtt_min is not None), default=None)
         rtt_max = max((m.rtt_max for m in mins if m.rtt_max is not None), default=None)
+        # For p50/p95/p99 across the hour we approximate from the per-minute
+        # percentiles — the honest computation would need raw samples (pruned after
+        # 48h). Upper-envelope for p95/p99 and median-of-medians for p50 are good
+        # enough for the "historical glance" use case; the Trends raw tier offers
+        # exact numbers when the data's still in ping_samples_raw.
+        rtt_p50_values = [m.rtt_p50 for m in mins if m.rtt_p50 is not None]
+        rtt_p50 = (sorted(rtt_p50_values)[len(rtt_p50_values) // 2]
+                   if rtt_p50_values else None)
         rtt_p95 = max((m.rtt_p95 for m in mins if m.rtt_p95 is not None), default=None)
+        rtt_p99 = max((m.rtt_p99 for m in mins if m.rtt_p99 is not None), default=None)
         jitters = [m.jitter_ms for m in mins if m.jitter_ms is not None]
         jitter = sum(jitters) / len(jitters) if jitters else None
         payload.append(
@@ -242,7 +348,9 @@ async def rollup_hour(db: AsyncSession, now_ms: int | None = None) -> HourRollup
                 "rtt_avg": rtt_avg,
                 "rtt_min": rtt_min,
                 "rtt_max": rtt_max,
+                "rtt_p50": rtt_p50,
                 "rtt_p95": rtt_p95,
+                "rtt_p99": rtt_p99,
                 "jitter_ms": jitter,
             }
         )
@@ -257,7 +365,9 @@ async def rollup_hour(db: AsyncSession, now_ms: int | None = None) -> HourRollup
                 "rtt_avg": stmt.excluded.rtt_avg,
                 "rtt_min": stmt.excluded.rtt_min,
                 "rtt_max": stmt.excluded.rtt_max,
+                "rtt_p50": stmt.excluded.rtt_p50,
                 "rtt_p95": stmt.excluded.rtt_p95,
+                "rtt_p99": stmt.excluded.rtt_p99,
                 "jitter_ms": stmt.excluded.jitter_ms,
             },
         )
@@ -267,16 +377,97 @@ async def rollup_hour(db: AsyncSession, now_ms: int | None = None) -> HourRollup
         db, meta_repo.LAST_HOUR_BUCKET_ROLLED, latest_complete_end - HOUR_MS
     )
     await db.commit()
+
+    # Passive hour rollup uses the same window. We fold the passive minute
+    # aggregates we just populated — reusing the same start/end cursor means
+    # passive and agent tables stay in sync.
+    passive_written = await _rollup_passive_hour(
+        db, start_bucket, latest_complete_end
+    )
+    if passive_written:
+        await db.commit()
+
     return HourRollupSummary(
         buckets_rolled=len(buckets),
-        aggregates_written=len(payload),
+        aggregates_written=len(payload) + passive_written,
     )
+
+
+async def _rollup_passive_hour(
+    db: AsyncSession, start_bucket: int, latest_complete_end: int,
+) -> int:
+    rows = (
+        await db.execute(
+            select(PassivePingAggregateMinute).where(
+                PassivePingAggregateMinute.bucket_ts_ms >= start_bucket,
+                PassivePingAggregateMinute.bucket_ts_ms < latest_complete_end,
+            )
+        )
+    ).scalars().all()
+    if not rows:
+        return 0
+    buckets: dict[tuple[int, int, int], list[PassivePingAggregateMinute]] = {}
+    for r in rows:
+        bucket = (r.bucket_ts_ms // HOUR_MS) * HOUR_MS
+        buckets.setdefault(
+            (r.source_agent_id, r.passive_target_id, bucket), []
+        ).append(r)
+    payload: list[dict] = []
+    for (src, tgt, bucket), mins in buckets.items():
+        sent = sum(m.sent for m in mins)
+        lost = sum(m.lost for m in mins)
+        rtts = [m.rtt_avg for m in mins if m.rtt_avg is not None]
+        rtt_avg = sum(rtts) / len(rtts) if rtts else None
+        rtt_min = min((m.rtt_min for m in mins if m.rtt_min is not None), default=None)
+        rtt_max = max((m.rtt_max for m in mins if m.rtt_max is not None), default=None)
+        p50_values = [m.rtt_p50 for m in mins if m.rtt_p50 is not None]
+        rtt_p50 = (sorted(p50_values)[len(p50_values) // 2]
+                   if p50_values else None)
+        rtt_p95 = max((m.rtt_p95 for m in mins if m.rtt_p95 is not None), default=None)
+        rtt_p99 = max((m.rtt_p99 for m in mins if m.rtt_p99 is not None), default=None)
+        jitters = [m.jitter_ms for m in mins if m.jitter_ms is not None]
+        jitter = sum(jitters) / len(jitters) if jitters else None
+        payload.append(
+            {
+                "source_agent_id": src,
+                "passive_target_id": tgt,
+                "bucket_ts_ms": bucket,
+                "sent": sent,
+                "lost": lost,
+                "rtt_avg": rtt_avg,
+                "rtt_min": rtt_min,
+                "rtt_max": rtt_max,
+                "rtt_p50": rtt_p50,
+                "rtt_p95": rtt_p95,
+                "rtt_p99": rtt_p99,
+                "jitter_ms": jitter,
+            }
+        )
+    if payload:
+        stmt = sqlite_insert(PassivePingAggregateHour).values(payload)
+        stmt = stmt.on_conflict_do_update(
+            index_elements=["source_agent_id", "passive_target_id", "bucket_ts_ms"],
+            set_={
+                "sent": stmt.excluded.sent,
+                "lost": stmt.excluded.lost,
+                "rtt_avg": stmt.excluded.rtt_avg,
+                "rtt_min": stmt.excluded.rtt_min,
+                "rtt_max": stmt.excluded.rtt_max,
+                "rtt_p50": stmt.excluded.rtt_p50,
+                "rtt_p95": stmt.excluded.rtt_p95,
+                "rtt_p99": stmt.excluded.rtt_p99,
+                "jitter_ms": stmt.excluded.jitter_ms,
+            },
+        )
+        await db.execute(stmt)
+    return len(payload)
 
 
 @dataclass(frozen=True)
 class PruneSummary:
     raw_deleted: int
     minute_deleted: int
+    wireless_deleted: int = 0
 
 
 async def prune(
@@ -321,4 +512,60 @@ async def prune(
     ).rowcount or 0
     await db.commit()
 
-    return PruneSummary(raw_deleted=raw_deleted, minute_deleted=minute_deleted)
+    # Passive raw samples prune on the same horizon as agent raw samples.
+    passive_raw_deleted = 0
+    while True:
+        ids = (
+            await db.execute(
+                select(PassivePingSampleRaw.id)
+                .where(PassivePingSampleRaw.ts_ms < raw_cutoff)
+                .limit(chunk)
+            )
+        ).scalars().all()
+        if not ids:
+            break
+        await db.execute(
+            delete(PassivePingSampleRaw).where(PassivePingSampleRaw.id.in_(ids))
+        )
+        passive_raw_deleted += len(ids)
+        await db.commit()
+        if len(ids) < chunk:
+            break
+    # Passive minute aggregates prune on the same horizon as agent minute
+    # aggregates.
+    (
+        await db.execute(
+            delete(PassivePingAggregateMinute).where(
+                PassivePingAggregateMinute.bucket_ts_ms < minute_cutoff
+            )
+        )
+    )
+    await db.commit()
+
+    # Wireless samples share the raw retention horizon — they're the per-poll sample
+    # series, same shape of write pattern as ping_samples_raw.
+    wireless_cutoff = now_ms - settings.raw_retention_hours * HOUR_MS
+    wireless_deleted = 0
+    while True:
+        ids = (
+            await db.execute(
+                select(WirelessSample.id)
+                .where(WirelessSample.ts_ms < wireless_cutoff)
+                .limit(chunk)
+            )
+        ).scalars().all()
+        if not ids:
+            break
+        await db.execute(
+            delete(WirelessSample).where(WirelessSample.id.in_(ids))
+        )
+        wireless_deleted += len(ids)
+        await db.commit()
+        if len(ids) < chunk:
+            break
+
+    return PruneSummary(
+        raw_deleted=raw_deleted,
+        minute_deleted=minute_deleted,
+        wireless_deleted=wireless_deleted,
+    )

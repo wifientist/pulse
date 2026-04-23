@@ -11,6 +11,7 @@ from pulse_server.config import Settings
 from pulse_server.logging import get_logger
 from pulse_server.services import (
     alert_engine,
+    boost_service,
     iperf3_orchestrator,
     rollup_service,
     webhook_dispatcher,
@@ -83,15 +84,31 @@ def _make_iperf_watchdog(sessionmaker: async_sessionmaker):
     return _job
 
 
+def _make_boost_prune(sessionmaker: async_sessionmaker):
+    async def _job() -> None:
+        async with sessionmaker() as db:
+            n = await boost_service.prune_expired(db)
+            if n:
+                await db.commit()
+                log.info("boost.expired", count=n)
+
+    return _job
+
+
 def _make_prune(sessionmaker: async_sessionmaker, settings: Settings):
     async def _job() -> None:
         async with sessionmaker() as db:
             summary = await rollup_service.prune(db, settings)
-            if summary.raw_deleted or summary.minute_deleted:
+            if (
+                summary.raw_deleted
+                or summary.minute_deleted
+                or summary.wireless_deleted
+            ):
                 log.info(
                     "rollup.prune",
                     raw=summary.raw_deleted,
                     minute=summary.minute_deleted,
+                    wireless=summary.wireless_deleted,
                 )
 
     return _job
@@ -127,6 +144,13 @@ def build_scheduler(
         _make_iperf_watchdog(sessionmaker),
         IntervalTrigger(seconds=5),
         id="iperf_watchdog",
+        coalesce=True,
+        max_instances=1,
+    )
+    scheduler.add_job(
+        _make_boost_prune(sessionmaker),
+        IntervalTrigger(seconds=10),
+        id="boost_prune",
         coalesce=True,
         max_instances=1,
     )

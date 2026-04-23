@@ -76,11 +76,18 @@ class AgentInterface(BaseModel):
     MAC is the stable identifier (doesn't change across reboots or DHCP renewals).
     `ip` is the current IPv4 address the interface holds — may be None if the interface
     is down. `iface_name` is informational (e.g. `eth1`, `ens20`).
+
+    Wireless fields (ssid/bssid/signal_dbm) are populated only when the interface is
+    wifi — i.e. `/sys/class/net/<iface>/wireless` exists. Populated from `iw dev <iface>
+    link` with no sudo. Null on wired interfaces.
     """
 
     mac: str
     ip: str | None = None
     iface_name: str | None = None
+    ssid: str | None = None
+    bssid: str | None = None
+    signal_dbm: int | None = None
 
 
 class PollRequest(BaseModel):
@@ -102,6 +109,12 @@ class PeerAssignment(BaseModel):
     target_ip: str
     interval_s: int
     enabled: bool = True
+    source_bind_ip: str | None = None
+    """IP on the source host to bind the ICMP socket to. Forces the kernel's routing
+    table to pick the interface whose primary IP matches this value — i.e. guarantees
+    the ping goes out the source agent's role=test interface and NOT whichever
+    interface the default route happens to choose. Null = let the kernel decide
+    (legacy behavior for agents that haven't been told their test-interface IP)."""
 
 
 class Command(BaseModel):

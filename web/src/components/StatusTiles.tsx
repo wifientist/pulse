@@ -1,6 +1,8 @@
 import { AlertTriangle, CheckCircle2, Clock, Users } from "lucide-react";
 
+import { useFilterStore } from "../store/filter";
 import { useSnapshotStore } from "../store/snapshot";
+import { buildFilterContext, isAgentVisible, isEdgeVisible } from "../utils/filterView";
 
 interface TileProps {
   label: string;
@@ -38,6 +40,8 @@ function Tile({ label, value, subtitle, icon, tone = "neutral" }: TileProps) {
 
 export default function StatusTiles() {
   const snapshot = useSnapshotStore((s) => s.snapshot);
+  const filterMode = useFilterStore((s) => s.mode);
+  const filterSelected = useFilterStore((s) => s.selected);
   if (!snapshot) {
     return (
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
@@ -51,27 +55,39 @@ export default function StatusTiles() {
     );
   }
 
-  const activeAgents = snapshot.agents.filter((a) => a.state === "active");
-  const upLinks = snapshot.link_states.filter((l) => l.state === "up").length;
-  const nonUpLinks = snapshot.link_states.filter(
+  const ctx = buildFilterContext(snapshot, filterMode, filterSelected);
+  const agentsScoped = snapshot.agents.filter(
+    (a) => ctx.mode === "all" || isAgentVisible(ctx, a.agent_uid),
+  );
+  const linksScoped = snapshot.link_states.filter((l) =>
+    isEdgeVisible(ctx, l.source_agent_uid, l.target_agent_uid),
+  );
+  const alertsScoped = snapshot.recent_alerts.filter((a) =>
+    isEdgeVisible(ctx, a.source_agent_uid, a.target_agent_uid),
+  );
+
+  const activeAgents = agentsScoped.filter((a) => a.state === "active");
+  const upLinks = linksScoped.filter((l) => l.state === "up").length;
+  const nonUpLinks = linksScoped.filter(
     (l) => l.state === "down" || l.state === "degraded",
   ).length;
+  // Pending enrollments are pre-agent — no uid to filter by; always show.
   const pending = snapshot.pending_enrollments.length;
-  const alerts1h = snapshot.recent_alerts.length;
+  const alerts1h = alertsScoped.length;
 
   return (
     <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
       <Tile
         label="Agents"
         value={activeAgents.length}
-        subtitle={`${snapshot.agents.length} total`}
+        subtitle={`${agentsScoped.length} total`}
         icon={<Users className="w-6 h-6" />}
         tone="neutral"
       />
       <Tile
         label="Links up"
         value={upLinks}
-        subtitle={`${snapshot.link_states.length} total`}
+        subtitle={`${linksScoped.length} total`}
         icon={<CheckCircle2 className="w-6 h-6" />}
         tone={nonUpLinks === 0 ? "ok" : "warn"}
       />

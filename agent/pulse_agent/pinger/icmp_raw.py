@@ -22,13 +22,19 @@ class IcmpRawPinger:
     def __init__(self, privileged: bool = False) -> None:
         self._privileged = privileged
 
-    async def ping_once(self, ip: str, timeout_s: float = 1.0) -> PingResult:
+    async def ping_once(
+        self, ip: str, timeout_s: float = 1.0, source: str | None = None
+    ) -> PingResult:
+        # `source` pins the ICMP socket to a specific local IP so the kernel's
+        # routing table picks the interface with that IP. Forces traffic out the
+        # test-plane interface even when the default route points at mgmt.
         try:
             host = await async_ping(
                 address=ip,
                 count=1,
                 timeout=timeout_s,
                 privileged=self._privileged,
+                source=source,
             )
         except asyncio.CancelledError:
             raise

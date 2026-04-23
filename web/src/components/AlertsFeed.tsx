@@ -1,10 +1,17 @@
+import { useFilterStore } from "../store/filter";
 import { useSnapshotStore } from "../store/snapshot";
 import { stateBadgeClass } from "../utils/edgeColor";
+import { buildFilterContext, isEdgeVisible } from "../utils/filterView";
 import { formatRelativeFromMs } from "../utils/time";
 
 export default function AlertsFeed({ limit = 20 }: { limit?: number }) {
   const snapshot = useSnapshotStore((s) => s.snapshot);
-  const alerts = (snapshot?.recent_alerts ?? []).slice(0, limit);
+  const filterMode = useFilterStore((s) => s.mode);
+  const filterSelected = useFilterStore((s) => s.selected);
+  const ctx = buildFilterContext(snapshot, filterMode, filterSelected);
+  const alerts = (snapshot?.recent_alerts ?? [])
+    .filter((a) => isEdgeVisible(ctx, a.source_agent_uid, a.target_agent_uid))
+    .slice(0, limit);
   const agentsByUid = new Map(
     (snapshot?.agents ?? []).map((a) => [a.agent_uid, a]),
   );

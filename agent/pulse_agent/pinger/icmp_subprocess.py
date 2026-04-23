@@ -24,19 +24,31 @@ class SubprocessPinger:
     def __init__(self) -> None:
         self._system = platform.system().lower()
 
-    def _args(self, ip: str, timeout_s: float) -> list[str]:
+    def _args(self, ip: str, timeout_s: float, source: str | None) -> list[str]:
         if self._system == "windows":
-            # -n count, -w timeout ms
-            return ["ping", "-n", "1", "-w", str(int(timeout_s * 1000)), ip]
+            # -n count, -w timeout ms. Windows ping uses -S <source_address>.
+            args = ["ping", "-n", "1", "-w", str(int(timeout_s * 1000))]
+            if source:
+                args += ["-S", source]
+            args += [ip]
+            return args
         # Linux / macOS
         # -c count; -W timeout in seconds (Linux) or ms-based on some BSDs — we use the
         # common Linux form which macOS ping also accepts (interprets -W similarly).
-        return ["ping", "-c", "1", "-W", str(max(1, int(timeout_s))), ip]
+        # -I <addr> pins the source address / interface; accepts either an IP or a
+        # device name. We always pass IP so behavior is identical across distros.
+        args = ["ping", "-c", "1", "-W", str(max(1, int(timeout_s)))]
+        if source:
+            args += ["-I", source]
+        args += [ip]
+        return args
 
-    async def ping_once(self, ip: str, timeout_s: float = 1.0) -> PingResult:
+    async def ping_once(
+        self, ip: str, timeout_s: float = 1.0, source: str | None = None
+    ) -> PingResult:
         try:
             proc = await asyncio.create_subprocess_exec(
-                *self._args(ip, timeout_s),
+                *self._args(ip, timeout_s, source),
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.DEVNULL,
             )

@@ -25,17 +25,21 @@ from pulse_server.config import Settings, load_settings
 from pulse_server.db.engine import build_engine, build_sessionmaker
 from pulse_server.logging import configure_logging, get_logger
 from pulse_server.routers import (
+    access_points,
     agents,
     alerts,
+    boosts,
     debug,
     enrollment,
     events,
     groups,
     health,
+    passive_targets,
     peers,
     tags,
     telemetry,
     tests,
+    trends,
     webhooks,
 )
 from pulse_server.scheduler.jobs import build_scheduler
@@ -82,6 +86,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(tests.router)
     app.include_router(webhooks.router)
     app.include_router(alerts.router)
+    app.include_router(access_points.router)
+    app.include_router(passive_targets.router)
+    app.include_router(boosts.router)
+    app.include_router(trends.router)
     app.include_router(events.router)
     app.include_router(debug.router)
 

@@ -4,6 +4,7 @@ import { useState } from "react";
 import AddAgentDialog from "../components/AddAgentDialog";
 import AgentsTable from "../components/AgentsTable";
 import EnrollmentTokensSection from "../components/EnrollmentTokensSection";
+import PassiveTargetsSection from "../components/PassiveTargetsSection";
 import PendingEnrollmentsSection from "../components/PendingEnrollmentsSection";
 
 export default function AgentsPage() {
@@ -22,6 +23,7 @@ export default function AgentsPage() {
       </div>
       <PendingEnrollmentsSection />
       <AgentsTable />
+      <PassiveTargetsSection />
       <EnrollmentTokensSection />
       <AddAgentDialog open={addOpen} onClose={() => setAddOpen(false)} />
     </div>

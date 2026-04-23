@@ -7,9 +7,11 @@ import {
 
 import Layout from "./components/Layout";
 import { useSnapshotStream } from "./hooks/useSnapshotStream";
+import AccessPointsPage from "./pages/AccessPointsPage";
 import AgentsPage from "./pages/AgentsPage";
 import DashboardPage from "./pages/DashboardPage";
 import LoginPage from "./pages/LoginPage";
+import TrendsPage from "./pages/TrendsPage";
 import { useAuthStore } from "./store/auth";
 
 function RequireAuth({ children }: { children: React.ReactNode }) {
@@ -47,6 +49,9 @@ export default function App() {
         >
           <Route path="/" element={<DashboardPage />} />
           <Route path="/agents" element={<AgentsPage />} />
+          <Route path="/deep-dive" element={<Navigate to="/trends" replace />} />
+          <Route path="/trends" element={<TrendsPage />} />
+          <Route path="/access-points" element={<AccessPointsPage />} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Route>
       </Routes>

@@ -11,7 +11,7 @@ from __future__ import annotations
 import time
 from typing import Any
 
-from sqlalchemy import and_, or_, select
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from pulse_server.db.models import Command, CommandResult
@@ -78,20 +78,18 @@ async def lease_pending_for_agent(
     for c in stale:
         c.status = CommandStatus.EXPIRED.value
 
+    # Only hand out PENDING commands — once a command is LEASED we've already
+    # dispatched it and the agent's working on it. Re-delivering a LEASED command
+    # on every poll while the agent hasn't ACK'd yet was causing racy duplicate
+    # runs for slow commands like self_upgrade. If the agent dies mid-run, the
+    # lease will expire (expiry handled above) and we'll re-send at that point.
     rows = (
         (
             await db.execute(
                 select(Command)
                 .where(
                     Command.agent_id == agent_id,
-                    or_(
-                        Command.status == CommandStatus.PENDING.value,
-                        and_(
-                            Command.status == CommandStatus.LEASED.value,
-                            Command.lease_expires_at.is_not(None),
-                            Command.lease_expires_at > now_ms,
-                        ),
-                    ),
+                    Command.status == CommandStatus.PENDING.value,
                     Command.deadline_ms > now_ms,
                 )
                 .order_by(Command.created_at)
@@ -101,9 +99,8 @@ async def lease_pending_for_agent(
         .all()
     )
     for c in rows:
-        if c.status == CommandStatus.PENDING.value:
-            c.status = CommandStatus.LEASED.value
-            c.dispatched_at = now_ms
+        c.status = CommandStatus.LEASED.value
+        c.dispatched_at = now_ms
         c.lease_expires_at = c.deadline_ms
     return rows
 

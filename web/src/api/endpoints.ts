@@ -1,11 +1,20 @@
-import { apiDelete, apiGet, apiPost } from "./client";
+import { apiDelete, apiGet, apiPatch, apiPost } from "./client";
 import type {
+  AccessPointCreate,
+  AccessPointUpdate,
+  AccessPointView,
   AgentView,
   AlertView,
   ApproveBody,
+  BoostView,
   NewEnrollmentTokenBody,
   NewEnrollmentTokenResponse,
+  PassiveTargetCreate,
+  PassiveTargetUpdate,
+  PassiveTargetView,
   PendingEnrollmentView,
+  TrendResponse,
+  UnassignedBssidView,
 } from "./types";
 
 // Read endpoints exist for ad-hoc use; in practice pages consume the SSE snapshot.
@@ -58,3 +67,65 @@ export const upgradeAgent = (agentId: number) =>
   apiPost<{ command_id: number; target_version: string }>(
     `/v1/admin/agents/${agentId}/upgrade`,
   );
+
+// --- Access points ---------------------------------------------------
+
+export const listAccessPoints = () =>
+  apiGet<AccessPointView[]>("/v1/admin/access-points");
+
+export const createAccessPoint = (body: AccessPointCreate) =>
+  apiPost<AccessPointView>("/v1/admin/access-points", body);
+
+export const updateAccessPoint = (id: number, body: AccessPointUpdate) =>
+  apiPatch<AccessPointView>(`/v1/admin/access-points/${id}`, body);
+
+export const deleteAccessPoint = (id: number) =>
+  apiDelete(`/v1/admin/access-points/${id}`);
+
+export const listUnassignedBssids = () =>
+  apiGet<UnassignedBssidView[]>("/v1/admin/access-points/unassigned-bssids");
+
+export const addBssidToAp = (apId: number, bssid: string) =>
+  apiPost<AccessPointView>(`/v1/admin/access-points/${apId}/bssids`, { bssid });
+
+export const removeBssidFromAp = (apId: number, bssid: string) =>
+  apiDelete(`/v1/admin/access-points/${apId}/bssids/${bssid}`);
+
+// --- Passive targets -------------------------------------------------
+
+export const createPassiveTarget = (body: PassiveTargetCreate) =>
+  apiPost<PassiveTargetView>("/v1/admin/passive-targets", body);
+
+export const updatePassiveTarget = (id: number, body: PassiveTargetUpdate) =>
+  apiPatch<PassiveTargetView>(`/v1/admin/passive-targets/${id}`, body);
+
+export const deletePassiveTarget = (id: number) =>
+  apiDelete(`/v1/admin/passive-targets/${id}`);
+
+// --- Boost -----------------------------------------------------------
+
+export const startBoost = (agentId: number, durationS: number) =>
+  apiPost<BoostView>(`/v1/admin/agents/${agentId}/boost`, {
+    duration_s: durationS,
+  });
+
+export const cancelBoost = (agentId: number) =>
+  apiDelete(`/v1/admin/agents/${agentId}/boost`);
+
+// --- Trends ----------------------------------------------------------
+
+export const getTrends = (
+  sourceUid: string,
+  targetUid: string,
+  sinceTs: number,
+  untilTs?: number,
+  granularity?: "auto" | "minute" | "hour",
+) => {
+  const p = new URLSearchParams();
+  p.set("source_uid", sourceUid);
+  p.set("target_uid", targetUid);
+  p.set("since_ts", String(sinceTs));
+  if (untilTs != null) p.set("until_ts", String(untilTs));
+  if (granularity) p.set("granularity", granularity);
+  return apiGet<TrendResponse>(`/v1/admin/trends?${p}`);
+};

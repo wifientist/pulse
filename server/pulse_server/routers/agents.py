@@ -32,6 +32,9 @@ class InterfaceView(BaseModel):
     current_ip: str | None
     iface_name: str | None
     role: str
+    ssid: str | None
+    bssid: str | None
+    signal_dbm: int | None
     first_seen: int
     last_seen: int
 
@@ -66,6 +69,9 @@ def _iface_view(i: AgentInterface) -> InterfaceView:
         current_ip=i.current_ip,
         iface_name=i.iface_name,
         role=i.role,
+        ssid=i.ssid,
+        bssid=i.bssid,
+        signal_dbm=i.signal_dbm,
         first_seen=i.first_seen,
         last_seen=i.last_seen,
     )

@@ -28,11 +28,16 @@ from sqlalchemy import desc, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from pulse_server.db.models import (
+    AccessPoint,
+    AccessPointBssid,
     Agent,
+    AgentBoost,
     AgentInterface,
     Alert,
     EnrollmentToken,
     LinkStateRow,
+    PassiveLinkStateRow,
+    PassiveTarget,
     PeerAssignment,
     PendingEnrollment,
 )
@@ -95,6 +100,9 @@ async def build_snapshot(db: AsyncSession) -> dict:
                 "current_ip": i.current_ip,
                 "iface_name": i.iface_name,
                 "role": i.role,
+                "ssid": i.ssid,
+                "bssid": i.bssid,
+                "signal_dbm": i.signal_dbm,
                 "first_seen": i.first_seen,
                 "last_seen": i.last_seen,
             }
@@ -214,6 +222,76 @@ async def build_snapshot(db: AsyncSession) -> dict:
         for t in token_rows
     ]
 
+    ap_rows = (
+        await db.execute(select(AccessPoint).order_by(AccessPoint.name))
+    ).scalars().all()
+    bssid_rows = (
+        await db.execute(select(AccessPointBssid))
+    ).scalars().all()
+    bssids_by_ap: dict[int, list[str]] = {}
+    for bss in bssid_rows:
+        bssids_by_ap.setdefault(int(bss.access_point_id), []).append(bss.bssid)
+    for lst in bssids_by_ap.values():
+        lst.sort()
+    aps_payload = [
+        {
+            "id": r.id,
+            "name": r.name,
+            "bssids": bssids_by_ap.get(r.id, []),
+            "location": r.location,
+            "notes": r.notes,
+            "created_at": r.created_at,
+            "updated_at": r.updated_at,
+        }
+        for r in ap_rows
+    ]
+
+    boost_rows = (await db.execute(select(AgentBoost))).scalars().all()
+    boost_agent_ids = {int(b.agent_id) for b in boost_rows}
+    boost_uid_map = await _uid_map(db, boost_agent_ids)
+    boosts_payload = [
+        {
+            "agent_id": b.agent_id,
+            "agent_uid": boost_uid_map.get(b.agent_id, ""),
+            "started_at": b.started_at,
+            "expires_at": b.expires_at,
+        }
+        for b in boost_rows
+    ]
+
+    passive_rows = (
+        await db.execute(select(PassiveTarget).order_by(PassiveTarget.name))
+    ).scalars().all()
+    passive_payload = [
+        {
+            "id": p.id,
+            "name": p.name,
+            "ip": p.ip,
+            "notes": p.notes,
+            "enabled": p.enabled,
+            "created_at": p.created_at,
+            "updated_at": p.updated_at,
+        }
+        for p in passive_rows
+    ]
+
+    passive_link_rows = (
+        await db.execute(select(PassiveLinkStateRow))
+    ).scalars().all()
+    plink_src_ids = {r.source_agent_id for r in passive_link_rows}
+    plink_uid_map = await _uid_map(db, plink_src_ids)
+    passive_links_payload = [
+        {
+            "source_agent_uid": plink_uid_map.get(r.source_agent_id, ""),
+            "passive_target_id": r.passive_target_id,
+            "state": r.state,
+            "since_ts": r.since_ts,
+            "loss_pct_1m": r.loss_pct_1m,
+            "rtt_p95_1m": r.rtt_p95_1m,
+        }
+        for r in passive_link_rows
+    ]
+
     return {
         "emitted_at": now,
         "agents": agents_payload,
@@ -222,6 +300,10 @@ async def build_snapshot(db: AsyncSession) -> dict:
         "link_states": links_payload,
         "recent_alerts": alerts_payload,
         "enrollment_tokens": tokens_payload,
+        "access_points": aps_payload,
+        "boosts": boosts_payload,
+        "passive_targets": passive_payload,
+        "passive_link_states": passive_links_payload,
     }
 
 

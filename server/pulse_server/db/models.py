@@ -71,11 +71,50 @@ class AgentInterface(Base):
     current_ip: Mapped[str | None] = mapped_column(String(45), nullable=True)
     iface_name: Mapped[str | None] = mapped_column(String(64), nullable=True)
     role: Mapped[str] = mapped_column(String(16), default="unknown")
+    ssid: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    bssid: Mapped[str | None] = mapped_column(String(17), nullable=True)
+    signal_dbm: Mapped[int | None] = mapped_column(Integer, nullable=True)
     first_seen: Mapped[int] = mapped_column(Integer)
     last_seen: Mapped[int] = mapped_column(Integer)
 
     __table_args__ = (
         UniqueConstraint("agent_id", "mac", name="uq_agent_interfaces_agent_mac"),
+    )
+
+
+class AccessPoint(Base):
+    """Admin-curated reference mapping one or more BSSIDs → a named physical AP.
+    Used purely for UI resolution when rendering wireless agent interfaces; no
+    runtime coupling to the wireless_interface data path. BSSIDs live in
+    `access_point_bssids` — many per AP to accommodate vendors (Ruckus) that
+    broadcast multiple BSSIDs per radio/SSID."""
+
+    __tablename__ = "access_points"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    name: Mapped[str] = mapped_column(String(64))
+    location: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    notes: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    created_at: Mapped[int] = mapped_column(Integer)
+    updated_at: Mapped[int] = mapped_column(Integer)
+
+
+class AccessPointBssid(Base):
+    """One BSSID bound to one AP. BSSIDs are unique globally — the admin UI
+    prevents accidental double-assignment. Cascade-delete means removing an
+    AP drops all its BSSIDs."""
+
+    __tablename__ = "access_point_bssids"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    access_point_id: Mapped[int] = mapped_column(
+        ForeignKey("access_points.id", ondelete="CASCADE")
+    )
+    bssid: Mapped[str] = mapped_column(String(17), unique=True)
+    created_at: Mapped[int] = mapped_column(Integer)
+
+    __table_args__ = (
+        Index("ix_access_point_bssids_ap", "access_point_id"),
     )
 
 
@@ -184,7 +223,9 @@ class PingAggregateMinute(Base):
     rtt_avg: Mapped[float | None] = mapped_column(Float, nullable=True)
     rtt_min: Mapped[float | None] = mapped_column(Float, nullable=True)
     rtt_max: Mapped[float | None] = mapped_column(Float, nullable=True)
+    rtt_p50: Mapped[float | None] = mapped_column(Float, nullable=True)
     rtt_p95: Mapped[float | None] = mapped_column(Float, nullable=True)
+    rtt_p99: Mapped[float | None] = mapped_column(Float, nullable=True)
     jitter_ms: Mapped[float | None] = mapped_column(Float, nullable=True)
 
 
@@ -199,7 +240,9 @@ class PingAggregateHour(Base):
     rtt_avg: Mapped[float | None] = mapped_column(Float, nullable=True)
     rtt_min: Mapped[float | None] = mapped_column(Float, nullable=True)
     rtt_max: Mapped[float | None] = mapped_column(Float, nullable=True)
+    rtt_p50: Mapped[float | None] = mapped_column(Float, nullable=True)
     rtt_p95: Mapped[float | None] = mapped_column(Float, nullable=True)
+    rtt_p99: Mapped[float | None] = mapped_column(Float, nullable=True)
     jitter_ms: Mapped[float | None] = mapped_column(Float, nullable=True)
 
 
@@ -321,6 +364,132 @@ class WebhookDelivery(Base):
     __table_args__ = (
         Index("ix_wh_deliveries_state_next", "state", "next_attempt_at"),
     )
+
+
+class WirelessSample(Base):
+    """One row per poll per wireless interface the agent reported on. Captures the
+    SSID/BSSID/signal-dBm at that moment so deep-dive reports (and future historical
+    views) can aggregate signal distribution + detect mid-session roams. Pruned on
+    the same horizon as `ping_samples_raw`."""
+
+    __tablename__ = "wireless_samples"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    agent_id: Mapped[int] = mapped_column(Integer)
+    agent_interface_id: Mapped[int] = mapped_column(Integer)
+    ts_ms: Mapped[int] = mapped_column(Integer)
+    ssid: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    bssid: Mapped[str | None] = mapped_column(String(17), nullable=True)
+    signal_dbm: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+    __table_args__ = (
+        Index("ix_wireless_samples_agent_ts", "agent_id", "ts_ms"),
+        Index("ix_wireless_samples_ts", "ts_ms"),
+    )
+
+
+class AgentBoost(Base):
+    """One row per agent currently in boost mode. While a row exists and
+    expires_at > now, poll_service forces this agent's outbound ping interval to
+    1 Hz (see BOOST_PING_INTERVAL_S). Lightweight — a second boost on the same
+    agent just bumps expires_at."""
+
+    __tablename__ = "agent_boosts"
+
+    agent_id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    started_at: Mapped[int] = mapped_column(Integer)
+    expires_at: Mapped[int] = mapped_column(Integer)
+
+    __table_args__ = (
+        Index("ix_agent_boosts_expires_at", "expires_at"),
+    )
+
+
+class PassiveTarget(Base):
+    """A ping-only endpoint that doesn't run a Pulse agent — e.g. a router, AP
+    mgmt IP, printer. All active agents ping it; each (agent, target) pair has
+    its own link state and samples, same shape as the peer mesh."""
+
+    __tablename__ = "passive_targets"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    name: Mapped[str] = mapped_column(String(128))
+    ip: Mapped[str] = mapped_column(String(45), unique=True)
+    notes: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[int] = mapped_column(Integer)
+    updated_at: Mapped[int] = mapped_column(Integer)
+
+    __table_args__ = (Index("ix_passive_targets_enabled", "enabled"),)
+
+
+class PassivePingSampleRaw(Base):
+    __tablename__ = "passive_ping_samples_raw"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    source_agent_id: Mapped[int] = mapped_column(Integer)
+    passive_target_id: Mapped[int] = mapped_column(Integer)
+    ts_ms: Mapped[int] = mapped_column(Integer)
+    rtt_ms: Mapped[float | None] = mapped_column(Float, nullable=True)
+    lost: Mapped[bool] = mapped_column(Boolean, default=False)
+    seq: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+    __table_args__ = (
+        Index(
+            "ix_passive_raw_src_tgt_ts",
+            "source_agent_id",
+            "passive_target_id",
+            "ts_ms",
+        ),
+        Index("ix_passive_raw_ts", "ts_ms"),
+    )
+
+
+class PassivePingAggregateMinute(Base):
+    __tablename__ = "passive_ping_aggregates_minute"
+
+    source_agent_id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    passive_target_id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    bucket_ts_ms: Mapped[int] = mapped_column(Integer, primary_key=True)
+    sent: Mapped[int] = mapped_column(Integer)
+    lost: Mapped[int] = mapped_column(Integer)
+    rtt_avg: Mapped[float | None] = mapped_column(Float, nullable=True)
+    rtt_min: Mapped[float | None] = mapped_column(Float, nullable=True)
+    rtt_max: Mapped[float | None] = mapped_column(Float, nullable=True)
+    rtt_p50: Mapped[float | None] = mapped_column(Float, nullable=True)
+    rtt_p95: Mapped[float | None] = mapped_column(Float, nullable=True)
+    rtt_p99: Mapped[float | None] = mapped_column(Float, nullable=True)
+    jitter_ms: Mapped[float | None] = mapped_column(Float, nullable=True)
+
+
+class PassivePingAggregateHour(Base):
+    __tablename__ = "passive_ping_aggregates_hour"
+
+    source_agent_id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    passive_target_id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    bucket_ts_ms: Mapped[int] = mapped_column(Integer, primary_key=True)
+    sent: Mapped[int] = mapped_column(Integer)
+    lost: Mapped[int] = mapped_column(Integer)
+    rtt_avg: Mapped[float | None] = mapped_column(Float, nullable=True)
+    rtt_min: Mapped[float | None] = mapped_column(Float, nullable=True)
+    rtt_max: Mapped[float | None] = mapped_column(Float, nullable=True)
+    rtt_p50: Mapped[float | None] = mapped_column(Float, nullable=True)
+    rtt_p95: Mapped[float | None] = mapped_column(Float, nullable=True)
+    rtt_p99: Mapped[float | None] = mapped_column(Float, nullable=True)
+    jitter_ms: Mapped[float | None] = mapped_column(Float, nullable=True)
+
+
+class PassiveLinkStateRow(Base):
+    __tablename__ = "passive_link_states"
+
+    source_agent_id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    passive_target_id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    state: Mapped[str] = mapped_column(String(16))
+    since_ts: Mapped[int] = mapped_column(Integer)
+    loss_pct_1m: Mapped[float | None] = mapped_column(Float, nullable=True)
+    rtt_p95_1m: Mapped[float | None] = mapped_column(Float, nullable=True)
+    candidate_state: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    candidate_since_ts: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
 
 class Meta(Base):

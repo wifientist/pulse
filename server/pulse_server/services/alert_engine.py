@@ -19,6 +19,8 @@ from pulse_server.db.models import (
     Agent,
     Alert,
     LinkStateRow,
+    PassiveLinkStateRow,
+    PassivePingAggregateMinute,
     PingAggregateMinute,
     Webhook,
     WebhookDelivery,
@@ -161,8 +163,67 @@ async def evaluate(
             row.candidate_since_ts = None
             transitions += 1
 
+    # Passive targets — mirror the same state-machine but against the parallel
+    # passive tables. No webhook fan-out for v1; we just record link state so
+    # the UI can render per-(agent, target) color.
+    passive_aggs = (
+        await db.execute(
+            select(PassivePingAggregateMinute).where(
+                PassivePingAggregateMinute.bucket_ts_ms == target_bucket
+            )
+        )
+    ).scalars().all()
+    for agg in passive_aggs:
+        desired = _derive(agg.sent, agg.lost, agg.rtt_p95, settings)
+        loss_pct = 100.0 * agg.lost / agg.sent if agg.sent else None
+
+        prow = (
+            await db.execute(
+                select(PassiveLinkStateRow).where(
+                    PassiveLinkStateRow.source_agent_id == agg.source_agent_id,
+                    PassiveLinkStateRow.passive_target_id == agg.passive_target_id,
+                )
+            )
+        ).scalar_one_or_none()
+        if prow is None:
+            prow = PassiveLinkStateRow(
+                source_agent_id=agg.source_agent_id,
+                passive_target_id=agg.passive_target_id,
+                state=LinkState.UNKNOWN.value,
+                since_ts=now,
+                loss_pct_1m=loss_pct,
+                rtt_p95_1m=agg.rtt_p95,
+                candidate_state=None,
+                candidate_since_ts=None,
+            )
+            db.add(prow)
+
+        prow.loss_pct_1m = loss_pct
+        prow.rtt_p95_1m = agg.rtt_p95
+        if desired.value == prow.state:
+            prow.candidate_state = None
+            prow.candidate_since_ts = None
+            continue
+
+        dwell_s = (
+            settings.recovery_window_s
+            if desired == LinkState.UP and prow.state != LinkState.UNKNOWN.value
+            else settings.min_dwell_s
+        )
+        if prow.candidate_state != desired.value or prow.candidate_since_ts is None:
+            prow.candidate_state = desired.value
+            prow.candidate_since_ts = now
+        if now - prow.candidate_since_ts >= dwell_s * 1000:
+            prow.state = desired.value
+            prow.since_ts = now
+            prow.candidate_state = None
+            prow.candidate_since_ts = None
+            transitions += 1
+
     await db.commit()
-    return EvaluateSummary(pairs_evaluated=len(aggs), transitions=transitions)
+    return EvaluateSummary(
+        pairs_evaluated=len(aggs) + len(passive_aggs), transitions=transitions
+    )
 
 
 async def _fanout_webhooks(db: AsyncSession, alert: Alert) -> None:

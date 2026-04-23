@@ -13,10 +13,12 @@ import {
   type Edge,
   type NodeChange,
 } from "@xyflow/react";
-import { LayoutGrid, Lock, Unlock } from "lucide-react";
+import { LayoutGrid, Lock, Unlock, Waypoints } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 
+import { useFilterStore } from "../store/filter";
 import { useSnapshotStore } from "../store/snapshot";
+import { buildFilterContext, isAgentVisible, isEdgeVisible } from "../utils/filterView";
 import {
   DEFAULT_SOURCE_HANDLE,
   DEFAULT_TARGET_HANDLE,
@@ -25,6 +27,7 @@ import {
   type MeshEdgeType,
   type MeshNodeType,
 } from "../utils/derive";
+import { autoEdgeHandles } from "../utils/autoEdge";
 import { styleForState } from "../utils/edgeColor";
 import {
   clearEdgeHandles,
@@ -82,6 +85,8 @@ function styleEdges(edges: MeshEdgeType[]): MeshEdgeType[] {
 
 export default function MeshDiagram() {
   const snapshot = useSnapshotStore((s) => s.snapshot);
+  const filterMode = useFilterStore((s) => s.mode);
+  const filterSelected = useFilterStore((s) => s.selected);
 
   // Controlled mode: parent owns nodes/edges state and passes them to ReactFlow as
   // props. onNodesChange/onEdgesChange feed React Flow's internal interactions (drag,
@@ -109,9 +114,18 @@ export default function MeshDiagram() {
     const savedHandles = loadEdgeHandles();
     const g = buildMeshGraph(snapshot, savedHandles);
 
+    // Apply the global filter — hide nodes/edges that the current mode excludes.
+    // Done AFTER buildMeshGraph so positions from dagre still consider the full
+    // topology (prevents visible nodes from shifting when the filter changes).
+    const ctx = buildFilterContext(snapshot, filterMode, filterSelected);
+    const visibleNodes = g.nodes.filter((n) => isAgentVisible(ctx, n.id));
+    const visibleEdges = g.edges.filter((e) =>
+      isEdgeVisible(ctx, e.source, e.target),
+    );
+
     setNodes((current) => {
       const currentByUid = new Map(current.map((n) => [n.id, n]));
-      return g.nodes.map((fresh) => {
+      return visibleNodes.map((fresh) => {
         const existing = currentByUid.get(fresh.id);
         if (existing) {
           return { ...fresh, position: existing.position };
@@ -122,8 +136,8 @@ export default function MeshDiagram() {
         return fresh;
       });
     });
-    setEdges(styleEdges(g.edges));
-  }, [snapshot, setNodes, setEdges]);
+    setEdges(styleEdges(visibleEdges));
+  }, [snapshot, setNodes, setEdges, filterMode, filterSelected]);
 
   // Drag end → persist every node's position so reloads keep the layout.
   const onNodeDragStop = useCallback(() => {
@@ -190,6 +204,26 @@ export default function MeshDiagram() {
     setEdges(styleEdges(g.edges));
     savePositions(g.nodes.map((n) => ({ id: n.id, position: n.position })));
   }, [snapshot, setNodes, setEdges]);
+
+  // Re-route edges based on current node positions. Nodes stay put; for each edge
+  // we pick the handle on each node whose side faces the other endpoint. Persisted
+  // via saveEdgeHandles so the choice survives reloads and snapshot ticks.
+  const autoEdge = useCallback(() => {
+    const picks = autoEdgeHandles(nodes, edges);
+    saveEdgeHandles(picks);
+    const pickById = new Map(picks.map((p) => [p.id, p.handles]));
+    setEdges(
+      edges.map((e) => {
+        const h = pickById.get(e.id);
+        if (!h) return e;
+        return {
+          ...e,
+          sourceHandle: h.source_handle,
+          targetHandle: h.target_handle,
+        };
+      }),
+    );
+  }, [nodes, edges, setEdges]);
 
   const toggleLock = useCallback(() => {
     setLocked((prev) => {
@@ -258,6 +292,14 @@ export default function MeshDiagram() {
               className="inline-flex items-center gap-1 bg-white border border-slate-200 shadow-sm rounded px-2 py-1 text-xs text-slate-700 hover:bg-slate-50"
             >
               <LayoutGrid className="w-3 h-3" /> Auto arrange
+            </button>
+            <button
+              type="button"
+              onClick={autoEdge}
+              title="Keep node positions, pick edge endpoints that face the other node"
+              className="inline-flex items-center gap-1 bg-white border border-slate-200 shadow-sm rounded px-2 py-1 text-xs text-slate-700 hover:bg-slate-50"
+            >
+              <Waypoints className="w-3 h-3" /> Auto edge
             </button>
             <button
               type="button"

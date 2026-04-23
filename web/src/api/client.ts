@@ -61,3 +61,16 @@ export async function apiDelete(path: string): Promise<void> {
     throw new Error(`DELETE ${path} ${response.status}`);
   }
 }
+
+export async function apiPatch<T>(path: string, body?: unknown): Promise<T> {
+  const response = await apiFetch(path, {
+    method: "PATCH",
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
+  if (!response.ok) {
+    const text = await response.text().catch(() => "");
+    throw new Error(`PATCH ${path} ${response.status}: ${text}`);
+  }
+  if (response.status === 204) return undefined as T;
+  return (await response.json()) as T;
+}

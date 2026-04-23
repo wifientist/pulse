@@ -29,6 +29,7 @@ class PeerSpec:
     target_agent_uid: str
     target_ip: str
     interval_s: float
+    source_bind_ip: str | None = None
 
 
 @dataclass
@@ -86,7 +87,11 @@ class PingScheduler:
         # Stagger the initial tick so all peers don't fire simultaneously.
         await asyncio.sleep(random.uniform(0, min(spec.interval_s, 1.0)))
         while True:
-            result = await self._pinger.ping_once(spec.target_ip, timeout_s=min(1.0, spec.interval_s / 2))
+            result = await self._pinger.ping_once(
+                spec.target_ip,
+                timeout_s=min(1.0, spec.interval_s / 2),
+                source=spec.source_bind_ip,
+            )
             self.state.seq += 1
             sample = Sample(
                 target_agent_uid=spec.target_agent_uid,

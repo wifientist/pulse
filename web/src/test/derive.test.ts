@@ -71,6 +71,10 @@ function snap(overrides: Partial<SnapshotEvent> = {}): SnapshotEvent {
     link_states: [],
     recent_alerts: [],
     enrollment_tokens: [],
+    access_points: [],
+    boosts: [],
+    passive_targets: [],
+    passive_link_states: [],
     ...overrides,
   };
 }

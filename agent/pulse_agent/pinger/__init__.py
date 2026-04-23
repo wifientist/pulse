@@ -16,7 +16,9 @@ from pulse_agent.pinger.icmp_subprocess import SubprocessPinger
 
 
 class Pinger(Protocol):
-    async def ping_once(self, ip: str, timeout_s: float = 1.0) -> PingResult: ...
+    async def ping_once(
+        self, ip: str, timeout_s: float = 1.0, source: str | None = None
+    ) -> PingResult: ...
 
 
 def build_pinger(raw_icmp: bool) -> Pinger:
