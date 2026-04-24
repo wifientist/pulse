@@ -29,6 +29,7 @@ from pulse_server.db.models import (
     PingAggregateMinute,
     PingSampleRaw,
     WirelessSample,
+    WirelessScanSample,
 )
 from pulse_server.db.session import get_db
 from pulse_server.security.deps import require_admin
@@ -77,6 +78,11 @@ class WirelessTrendSeries(BaseModel):
     points: list[WirelessTrendPoint]
     # Roam events: each entry marks the first point of a new BSSID.
     roams: list[dict]  # [{ts_ms, from_bssid, to_bssid}]
+    bssid_frequencies: dict[str, int] = {}
+    """Most-recent `frequency_mhz` per BSSID, sourced from wireless_scan_samples
+    if a monitor agent has ever seen it. Empty for BSSIDs never scanned — the
+    client-connect path doesn't capture frequency. Lets the UI show a band
+    badge ("2.4/5/6 GHz") without extending the raw wireless sample schema."""
 
 
 class TrendResponse(BaseModel):
@@ -354,6 +360,29 @@ async def _wireless_series(
             (int(s.agent_id), int(s.agent_interface_id)), []
         ).append(s)
 
+    # BSSID → most-recent frequency, pulled from the airspace scan table if a
+    # monitor agent has ever observed any of these BSSIDs. Empty otherwise.
+    bssids = {s.bssid for s in samples if s.bssid}
+    bssid_freq_map: dict[str, int] = {}
+    if bssids:
+        # func.max picks the most recent freq per bssid in one query.
+        from sqlalchemy import func as sa_func
+
+        freq_rows = (
+            await db.execute(
+                select(
+                    WirelessScanSample.bssid,
+                    sa_func.max(WirelessScanSample.frequency_mhz),
+                )
+                .where(
+                    WirelessScanSample.bssid.in_(bssids),
+                    WirelessScanSample.frequency_mhz.is_not(None),
+                )
+                .group_by(WirelessScanSample.bssid)
+            )
+        ).all()
+        bssid_freq_map = {b: int(f) for b, f in freq_rows if f is not None}
+
     out: list[WirelessTrendSeries] = []
     for (aid, iid), rows in by_key.items():
         rows.sort(key=lambda r: r.ts_ms)
@@ -376,6 +405,12 @@ async def _wireless_series(
                 )
             if r.bssid:
                 prev_bssid = r.bssid
+        # Filter the freq map to BSSIDs this series actually saw, so the
+        # payload stays tidy.
+        seen_bssids = {r.bssid for r in rows if r.bssid}
+        series_freqs = {
+            b: f for b, f in bssid_freq_map.items() if b in seen_bssids
+        }
         out.append(
             WirelessTrendSeries(
                 agent_uid=uid_by_id.get(aid, ""),
@@ -383,6 +418,7 @@ async def _wireless_series(
                 iface_name=iface_name_by_id.get(iid),
                 points=pts,
                 roams=roams,
+                bssid_frequencies=series_freqs,
             )
         )
     return out

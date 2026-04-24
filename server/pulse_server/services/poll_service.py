@@ -132,10 +132,13 @@ async def _upsert_agent_interfaces(
             )
 
 
-async def _primary_test_ip_changed(db: AsyncSession, agent_id: int) -> bool:
-    """True if this agent's role=test interface IP differs from what peer_assignments
-    are currently snapshotting. Bumping peer_assignments_version on a change triggers
-    downstream agents to pick up the new target_ip on their next poll."""
+async def _refresh_peer_target_ip(db: AsyncSession, agent_id: int) -> bool:
+    """If this agent's role=test interface IP has changed, update every
+    peer_assignments row where it's the target so sources see the new IP on
+    their next poll. Returns True iff any rows were updated — caller bumps
+    peer_assignments_version so agents actually re-fetch."""
+    from sqlalchemy import update as sa_update
+
     from pulse_server.db.models import PeerAssignment
 
     primary = (
@@ -148,15 +151,15 @@ async def _primary_test_ip_changed(db: AsyncSession, agent_id: int) -> bool:
     ).scalar_one_or_none()
     if primary is None or primary.current_ip is None:
         return False
-    stale_count = (
-        await db.execute(
-            select(PeerAssignment).where(
-                PeerAssignment.target_agent_id == agent_id,
-                PeerAssignment.target_ip != primary.current_ip,
-            )
+    result = await db.execute(
+        sa_update(PeerAssignment)
+        .where(
+            PeerAssignment.target_agent_id == agent_id,
+            PeerAssignment.target_ip != primary.current_ip,
         )
-    ).scalars().all()
-    return bool(stale_count)
+        .values(target_ip=primary.current_ip)
+    )
+    return (result.rowcount or 0) > 0
 
 
 async def handle_poll(
@@ -192,9 +195,11 @@ async def handle_poll(
     peer_version_bumped = False
     if body.interfaces:
         await _upsert_agent_interfaces(db, agent.id, body.interfaces, now)
-        # If the agent's primary_test interface IP changed from what peer_assignments
-        # currently snapshot, bump the mesh version so the change propagates.
-        if await _primary_test_ip_changed(db, agent.id):
+        # If the agent's primary_test interface IP changed (DHCP renewal,
+        # roam to a new SSID on a different subnet, etc.), update the
+        # peer_assignments rows where it's the target in place AND bump the
+        # version so sources re-fetch within one poll cycle.
+        if await _refresh_peer_target_ip(db, agent.id):
             await meta_repo.bump(db, meta_repo.PEER_ASSIGNMENTS_VERSION)
             peer_version_bumped = True
 

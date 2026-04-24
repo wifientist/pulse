@@ -24,7 +24,20 @@ export type MeshNodeData = {
   [key: string]: unknown;
 };
 
+export interface DirectionStats {
+  sourceUid: string;
+  targetUid: string;
+  targetIp: string;
+  state: LinkState | string;
+  loss_pct_1m: number | null;
+  rtt_p95_1m: number | null;
+}
+
 export type MeshEdgeData = {
+  // Aggregate fields, kept so existing consumers keep working. For bidi
+  // agent-to-agent edges these represent the *worst* of the two directions
+  // (drives the edge's color); for unidirectional edges they're just the
+  // one-direction values.
   sourceUid: string;
   targetUid: string;
   targetIp: string;
@@ -32,6 +45,12 @@ export type MeshEdgeData = {
   loss_pct_1m: number | null;
   rtt_p95_1m: number | null;
   is_passive?: boolean;
+  // Per-direction breakdown. `forward` = sourceUid → targetUid as rendered;
+  // `reverse` = the other way. Both present on bidi agent-pair edges; only
+  // `forward` on unidirectional edges (passive, or half-configured mesh).
+  forward?: DirectionStats;
+  reverse?: DirectionStats;
+  is_bidi?: boolean;
   [key: string]: unknown;
 };
 
@@ -110,52 +129,95 @@ export function buildMeshGraph(
     data: { agent: a },
   }));
 
-  // Pre-compute which (src, tgt) pairs have a reverse edge too — used below to pick
-  // bidi-safe defaults so two opposite edges don't perfectly overlap (and their
-  // animated dashes alias into a flickering blink). One direction per pair keeps
-  // the geometric default; the other gets a perpendicular routing.
-  const enabledPairs = new Set(
-    snapshot.peer_assignments
-      .filter(
-        (p) =>
-          p.enabled
-          && agentsByUid.has(p.source_agent_uid)
-          && agentsByUid.has(p.target_agent_uid),
-      )
-      .map((p) => `${p.source_agent_uid}->${p.target_agent_uid}`),
-  );
+  // Rank each link state so we can pick the "worst" side of a bidi pair for
+  // the aggregate edge color. down > degraded > unknown > up.
+  const stateRank: Record<string, number> = {
+    down: 3,
+    degraded: 2,
+    unknown: 1,
+    up: 0,
+  };
+  const worseState = (a: string, b: string) =>
+    (stateRank[a] ?? 0) >= (stateRank[b] ?? 0) ? a : b;
+  const maxNullable = (a: number | null, b: number | null): number | null => {
+    if (a == null) return b;
+    if (b == null) return a;
+    return Math.max(a, b);
+  };
 
-  const edges: MeshEdgeType[] = [];
+  // Collapse every (A, B) / (B, A) pair into a single edge with per-direction
+  // stats. Keeps the diagram readable when the mesh is fully bidi — a single
+  // line instead of two near-overlapping ones whose animated dashes alias.
+  interface PairAccum {
+    uidA: string; // lexicographic min
+    uidB: string; // lexicographic max
+    forward?: DirectionStats; // A→B
+    reverse?: DirectionStats; // B→A
+  }
+  const pairs = new Map<string, PairAccum>();
+
   for (const pa of snapshot.peer_assignments) {
     if (!pa.enabled) continue;
     if (!agentsByUid.has(pa.source_agent_uid)) continue;
     if (!agentsByUid.has(pa.target_agent_uid)) continue;
-    const id = `${pa.source_agent_uid}->${pa.target_agent_uid}`;
-    const reverseId = `${pa.target_agent_uid}->${pa.source_agent_uid}`;
-    const isBidi = enabledPairs.has(reverseId);
-    // For bidi pairs, the direction whose source uid sorts later gets the
-    // perpendicular routing — keeps the choice deterministic and stable between
-    // snapshots.
-    const isSecondary =
-      isBidi && pa.source_agent_uid > pa.target_agent_uid;
-    const defaultSource = isSecondary ? "top" : DEFAULT_SOURCE_HANDLE;
-    const defaultTarget = isSecondary ? "top" : DEFAULT_TARGET_HANDLE;
+    const [uidA, uidB] = [pa.source_agent_uid, pa.target_agent_uid].sort();
+    const pairId = `${uidA}<->${uidB}`;
+    const entry = pairs.get(pairId) ?? { uidA, uidB };
+    const link = linkMap.get(
+      `${pa.source_agent_uid}->${pa.target_agent_uid}`,
+    );
+    const dirStats: DirectionStats = {
+      sourceUid: pa.source_agent_uid,
+      targetUid: pa.target_agent_uid,
+      targetIp: pa.target_ip,
+      state: link?.state ?? "unknown",
+      loss_pct_1m: link?.loss_pct_1m ?? null,
+      rtt_p95_1m: link?.rtt_p95_1m ?? null,
+    };
+    if (pa.source_agent_uid === uidA) {
+      entry.forward = dirStats;
+    } else {
+      entry.reverse = dirStats;
+    }
+    pairs.set(pairId, entry);
+  }
 
-    const link = linkMap.get(id);
-    const saved = savedHandles[id];
+  const edges: MeshEdgeType[] = [];
+  for (const [pairId, pd] of pairs) {
+    const forward = pd.forward;
+    const reverse = pd.reverse;
+    const isBidi = !!(forward && reverse);
+    const aggState = isBidi
+      ? worseState(forward!.state as string, reverse!.state as string)
+      : (forward?.state ?? reverse?.state ?? "unknown");
+    const aggLoss = maxNullable(
+      forward?.loss_pct_1m ?? null,
+      reverse?.loss_pct_1m ?? null,
+    );
+    const aggRtt = maxNullable(
+      forward?.rtt_p95_1m ?? null,
+      reverse?.rtt_p95_1m ?? null,
+    );
+    // Prefer the forward direction for the rendered source→target; if only
+    // the reverse exists, use that.
+    const primary = forward ?? reverse!;
+    const saved = savedHandles[pairId];
     edges.push({
-      id,
-      source: pa.source_agent_uid,
-      target: pa.target_agent_uid,
-      sourceHandle: saved?.source_handle ?? defaultSource,
-      targetHandle: saved?.target_handle ?? defaultTarget,
+      id: pairId,
+      source: primary.sourceUid,
+      target: primary.targetUid,
+      sourceHandle: saved?.source_handle ?? DEFAULT_SOURCE_HANDLE,
+      targetHandle: saved?.target_handle ?? DEFAULT_TARGET_HANDLE,
       data: {
-        sourceUid: pa.source_agent_uid,
-        targetUid: pa.target_agent_uid,
-        targetIp: pa.target_ip,
-        state: link?.state ?? "unknown",
-        loss_pct_1m: link?.loss_pct_1m ?? null,
-        rtt_p95_1m: link?.rtt_p95_1m ?? null,
+        sourceUid: primary.sourceUid,
+        targetUid: primary.targetUid,
+        targetIp: primary.targetIp,
+        state: aggState,
+        loss_pct_1m: aggLoss,
+        rtt_p95_1m: aggRtt,
+        is_bidi: isBidi,
+        forward: forward,
+        reverse: reverse,
       },
     });
   }

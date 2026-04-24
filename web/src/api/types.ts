@@ -230,6 +230,7 @@ export interface WirelessTrendSeries {
   iface_name: string | null;
   points: WirelessTrendPoint[];
   roams: WirelessRoam[];
+  bssid_frequencies?: Record<string, number>;
 }
 
 export interface TrendResponse {

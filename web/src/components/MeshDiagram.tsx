@@ -14,7 +14,7 @@ import {
   type NodeChange,
 } from "@xyflow/react";
 import { LayoutGrid, Lock, Unlock, Waypoints } from "lucide-react";
-import { useCallback, useEffect, useRef, useState } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 
 import { useFilterStore } from "../store/filter";
 import { useSnapshotStore } from "../store/snapshot";
@@ -57,6 +57,13 @@ function styleEdges(edges: MeshEdgeType[]): MeshEdgeType[] {
     const loss = data?.loss_pct_1m;
     const rtt = data?.rtt_p95_1m;
     const hasStats = rtt != null || loss != null;
+    const isBidi = !!data?.is_bidi;
+    const marker = {
+      type: MarkerType.ArrowClosed,
+      width: 14,
+      height: 14,
+      color: style.stroke,
+    };
     return {
       ...e,
       animated: data?.state === "up",
@@ -66,18 +73,16 @@ function styleEdges(edges: MeshEdgeType[]): MeshEdgeType[] {
         strokeWidth: style.strokeWidth,
         strokeDasharray: style.strokeDasharray,
       },
-      markerEnd: {
-        type: MarkerType.ArrowClosed,
-        width: 14,
-        height: 14,
-        color: style.stroke,
-      },
+      markerEnd: marker,
+      // Bidi edges get an arrow at both ends so the consolidated line
+      // still reads as "both directions".
+      markerStart: isBidi ? marker : undefined,
       labelStyle: { fontSize: 10, fill: "#475569" },
       labelBgStyle: { fill: "white", fillOpacity: 0.9 },
       labelBgBorderRadius: 4,
       labelBgPadding: [4, 2] as [number, number],
       label: hasStats
-        ? `${formatMs(rtt ?? null)} · ${formatPct(loss ?? null)}`
+        ? `${isBidi ? "↔ " : ""}${formatMs(rtt ?? null)} · ${formatPct(loss ?? null)}`
         : (data?.state ?? "unknown"),
     };
   });
@@ -95,6 +100,36 @@ export default function MeshDiagram() {
   const [edges, setEdges, onEdgesChange] = useEdgesState<MeshEdgeType>([]);
   const [locked, setLocked] = useState<boolean>(() => loadLocked());
   const edgeReconnectSuccessful = useRef(true);
+
+  // Floating tooltip for edges — shown on hover. For bidi agent pairs we
+  // render both directions' stats on separate lines so the consolidated
+  // line is still self-documenting.
+  const [hoverEdge, setHoverEdge] = useState<{
+    edge: MeshEdgeType;
+    x: number;
+    y: number;
+  } | null>(null);
+  const onEdgeMouseEnter = useCallback(
+    (event: React.MouseEvent, edge: Edge) => {
+      setHoverEdge({
+        edge: edge as MeshEdgeType,
+        x: event.clientX,
+        y: event.clientY,
+      });
+    },
+    [],
+  );
+  const onEdgeMouseMove = useCallback(
+    (event: React.MouseEvent, edge: Edge) => {
+      setHoverEdge({
+        edge: edge as MeshEdgeType,
+        x: event.clientX,
+        y: event.clientY,
+      });
+    },
+    [],
+  );
+  const onEdgeMouseLeave = useCallback(() => setHoverEdge(null), []);
 
   /**
    * Reconcile our state from each snapshot:
@@ -271,6 +306,9 @@ export default function MeshDiagram() {
         onReconnect={onReconnect}
         onReconnectStart={onReconnectStart}
         onReconnectEnd={onReconnectEnd}
+        onEdgeMouseEnter={onEdgeMouseEnter}
+        onEdgeMouseMove={onEdgeMouseMove}
+        onEdgeMouseLeave={onEdgeMouseLeave}
         nodeTypes={nodeTypes}
         nodesDraggable={!locked}
         nodesConnectable={false}
@@ -326,6 +364,109 @@ export default function MeshDiagram() {
           </div>
         </Panel>
       </ReactFlow>
+      {hoverEdge ? <EdgeTooltip hover={hoverEdge} snapshot={snapshot} /> : null}
     </div>
+  );
+}
+
+
+/** Floating hover tooltip for mesh edges. Shows per-direction stats for
+ * bidi agent pairs (two lines) or a single line for unidirectional / passive
+ * edges. Positioned at the cursor; pointer-events-none so it never steals
+ * hover events. */
+function EdgeTooltip({
+  hover,
+  snapshot,
+}: {
+  hover: { edge: MeshEdgeType; x: number; y: number };
+  snapshot: ReturnType<typeof useSnapshotStore.getState>["snapshot"];
+}) {
+  const data = hover.edge.data as MeshEdgeData | undefined;
+  if (!data) return null;
+  const hostnameOf = (uid: string) => {
+    if (uid.startsWith("passive:")) {
+      const id = Number(uid.slice("passive:".length));
+      return snapshot?.passive_targets.find((p) => p.id === id)?.name ?? uid;
+    }
+    return (
+      snapshot?.agents.find((a) => a.agent_uid === uid)?.hostname
+        ?? uid.slice(0, 8)
+    );
+  };
+  const DirRow = ({
+    from,
+    to,
+    state,
+    rtt,
+    loss,
+  }: {
+    from: string;
+    to: string;
+    state: string;
+    rtt: number | null;
+    loss: number | null;
+  }) => (
+    <div className="flex items-center gap-1.5 leading-tight">
+      <span className="text-slate-500 text-xs">{hostnameOf(from)}</span>
+      <span className="text-slate-400">→</span>
+      <span className="text-slate-500 text-xs">{hostnameOf(to)}</span>
+      <StatePill state={state} />
+      <span className="font-mono text-xs text-slate-700 ml-auto">
+        {formatMs(rtt)} · {formatPct(loss)}
+      </span>
+    </div>
+  );
+  return (
+    <div
+      className="fixed z-50 pointer-events-none bg-white border border-slate-200 rounded shadow-lg px-3 py-2 text-xs min-w-[280px]"
+      style={{ left: hover.x + 12, top: hover.y + 12 }}
+    >
+      {data.forward ? (
+        <DirRow
+          from={data.forward.sourceUid}
+          to={data.forward.targetUid}
+          state={String(data.forward.state)}
+          rtt={data.forward.rtt_p95_1m}
+          loss={data.forward.loss_pct_1m}
+        />
+      ) : null}
+      {data.reverse ? (
+        <DirRow
+          from={data.reverse.sourceUid}
+          to={data.reverse.targetUid}
+          state={String(data.reverse.state)}
+          rtt={data.reverse.rtt_p95_1m}
+          loss={data.reverse.loss_pct_1m}
+        />
+      ) : null}
+      {/* Passive edges don't have forward/reverse populated — fall back to
+          the aggregate so the tooltip still says something useful. */}
+      {!data.forward && !data.reverse ? (
+        <DirRow
+          from={data.sourceUid}
+          to={data.targetUid}
+          state={String(data.state)}
+          rtt={data.rtt_p95_1m}
+          loss={data.loss_pct_1m}
+        />
+      ) : null}
+    </div>
+  );
+}
+
+
+function StatePill({ state }: { state: string }) {
+  const cls =
+    state === "up"
+      ? "bg-emerald-50 text-emerald-700"
+      : state === "degraded"
+        ? "bg-amber-50 text-amber-700"
+        : state === "down"
+          ? "bg-rose-50 text-rose-700"
+          : "bg-slate-100 text-slate-500";
+  return (
+    <span className={`px-1 py-0 rounded text-[10px] font-semibold ${cls}`}>
+      {state}
+    </span>
   );
 }

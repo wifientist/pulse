@@ -1083,6 +1083,7 @@ function WirelessPanel({
       <ConsolidatedWirelessChart
         wireless={sorted}
         clientColor={clientColor}
+        apResolver={apResolver}
         short={short}
       />
       {sorted.map((w) => (
@@ -1115,12 +1116,23 @@ const SSID_DASH_STYLES: (string | undefined)[] = [
 function ConsolidatedWirelessChart({
   wireless,
   clientColor,
+  apResolver,
   short,
 }: {
   wireless: WirelessTrendSeries[];
   clientColor: Map<string, string>;
+  apResolver: ApResolver;
   short: boolean;
 }) {
+  // Consolidated freq lookup: BSSID → frequency_mhz, pulled from any series
+  // that has a hit. Identical across series because frequency is a property
+  // of the BSSID, not the reporting agent.
+  const freqByBssid = new Map<string, number>();
+  for (const w of wireless) {
+    for (const [b, f] of Object.entries(w.bssid_frequencies ?? {})) {
+      if (!freqByBssid.has(b)) freqByBssid.set(b, f);
+    }
+  }
   interface Row {
     ts: number;
     [col: string]: number | null | undefined;
@@ -1194,6 +1206,7 @@ function ConsolidatedWirelessChart({
       uid: string;
       value: number | null;
       ssid: string | null;
+      bssid: string | null;
     };
     const byUid = new Map<string, Entry>();
     for (const w of wireless) {
@@ -1208,6 +1221,7 @@ function ConsolidatedWirelessChart({
           uid: w.agent_uid,
           value: found.signal_dbm,
           ssid: found.ssid,
+          bssid: found.bssid,
         });
       }
     }
@@ -1220,6 +1234,8 @@ function ConsolidatedWirelessChart({
         {Array.from(byUid.values()).map((e) => {
           const iface = ifaceOf(e.uid);
           const ssidCount = ssidsByUid.get(e.uid)?.size ?? 0;
+          const apName = e.bssid ? apResolver.name(e.bssid) : null;
+          const band = bandLabel(e.bssid ? freqByBssid.get(e.bssid) : null);
           return (
             <div key={e.uid} className="space-y-0.5">
               <div className="flex items-center gap-1">
@@ -1249,6 +1265,28 @@ function ConsolidatedWirelessChart({
                     title="This client has been on multiple SSIDs in this window"
                   >
                     ({ssidCount})
+                  </span>
+                ) : null}
+              </div>
+              <div className="pl-4 text-slate-700 flex items-center gap-1.5 flex-wrap">
+                <span>AP:</span>
+                <span className="font-medium">{apName ?? "unknown"}</span>
+                {band ? (
+                  <span
+                    className={
+                      band === "2.4 GHz"
+                        ? "px-1 rounded bg-amber-50 text-amber-700 text-[9px] font-semibold"
+                        : band === "5 GHz"
+                          ? "px-1 rounded bg-sky-50 text-sky-700 text-[9px] font-semibold"
+                          : "px-1 rounded bg-violet-50 text-violet-700 text-[9px] font-semibold"
+                    }
+                  >
+                    {band}
+                  </span>
+                ) : null}
+                {e.bssid ? (
+                  <span className="text-slate-400 font-mono text-[10px]">
+                    {e.bssid}
                   </span>
                 ) : null}
               </div>
