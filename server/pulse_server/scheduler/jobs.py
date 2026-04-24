@@ -88,8 +88,8 @@ def _make_boost_prune(sessionmaker: async_sessionmaker):
     async def _job() -> None:
         async with sessionmaker() as db:
             n = await boost_service.prune_expired(db)
+            await db.commit()
             if n:
-                await db.commit()
                 log.info("boost.expired", count=n)
 
     return _job
@@ -103,12 +103,14 @@ def _make_prune(sessionmaker: async_sessionmaker, settings: Settings):
                 summary.raw_deleted
                 or summary.minute_deleted
                 or summary.wireless_deleted
+                or summary.scan_deleted
             ):
                 log.info(
                     "rollup.prune",
                     raw=summary.raw_deleted,
                     minute=summary.minute_deleted,
                     wireless=summary.wireless_deleted,
+                    scan=summary.scan_deleted,
                 )
 
     return _job

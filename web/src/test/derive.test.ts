@@ -75,6 +75,8 @@ function snap(overrides: Partial<SnapshotEvent> = {}): SnapshotEvent {
     boosts: [],
     passive_targets: [],
     passive_link_states: [],
+    monitored_ssids: [],
+    active_tool_run: null,
     ...overrides,
   };
 }

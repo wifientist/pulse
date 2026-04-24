@@ -22,3 +22,13 @@ export function formatPct(n: number | null | undefined, digits = 1): string {
 export function formatAbsolute(ts: number): string {
   return new Date(ts).toLocaleString();
 }
+
+/** Map a wireless operating frequency (MHz) to the common band label.
+ * 2.4 GHz: 2412-2484, 5 GHz: 5150-5925, 6 GHz: 5925-7125. Returns null
+ * for unknown/missing frequency. */
+export function bandLabel(freqMhz: number | null | undefined): string | null {
+  if (!freqMhz) return null;
+  if (freqMhz < 3000) return "2.4 GHz";
+  if (freqMhz < 5925) return "5 GHz";
+  return "6 GHz";
+}

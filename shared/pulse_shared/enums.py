@@ -79,12 +79,16 @@ class InterfaceRole(StrEnum):
     - `management`: informational only — the agent uses this to reach the server.
     - `ignored`: interface exists but nobody cares about it.
     - `unknown`: freshly reported, not yet classified by admin.
+    - `monitor`: wireless airspace monitor — agent runs `iw scan` on this iface
+      and reports visible BSSIDs. Agents with any monitor-role interface are
+      excluded from the peer-mesh (no pings in or out).
     """
 
     TEST = "test"
     MANAGEMENT = "management"
     IGNORED = "ignored"
     UNKNOWN = "unknown"
+    MONITOR = "monitor"
 
 
 TERMINAL_IPERF_STATES = frozenset(

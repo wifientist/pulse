@@ -33,9 +33,16 @@ const roleClass: Record<string, string> = {
   management: "bg-sky-50 text-sky-700",
   ignored: "bg-slate-100 text-slate-500",
   unknown: "bg-amber-50 text-amber-700",
+  monitor: "bg-violet-50 text-violet-700",
 };
 
-const ROLE_OPTIONS = ["test", "management", "ignored", "unknown"] as const;
+const ROLE_OPTIONS = [
+  "test",
+  "management",
+  "ignored",
+  "unknown",
+  "monitor",
+] as const;
 
 function InterfacesPanel({
   agent,
@@ -86,7 +93,7 @@ function InterfacesPanel({
                     className={`font-medium rounded px-1.5 py-0.5 border-0 text-xs ${
                       roleClass[i.role] ?? "bg-slate-100 text-slate-700"
                     }`}
-                    title="Classify: test (peers ping it), management, ignored, or unknown"
+                    title="test = pings go in/out; management = informational; ignored = skip; monitor = airspace scan (agent ignored by mesh)"
                   >
                     {ROLE_OPTIONS.map((r) => (
                       <option key={r} value={r}>

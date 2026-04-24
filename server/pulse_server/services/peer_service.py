@@ -51,6 +51,18 @@ async def recompute_full_mesh(db: AsyncSession) -> RecomputeSummary:
         .scalars()
         .all()
     )
+    # Monitor-role agents sit outside the ping mesh: they don't initiate pings
+    # and nothing pings them. Identify by presence of any role=monitor iface.
+    monitor_ids = set(
+        (
+            await db.execute(
+                select(AgentInterface.agent_id).where(
+                    AgentInterface.role == "monitor"
+                )
+            )
+        ).scalars().all()
+    )
+    active = [a for a in active if a.id not in monitor_ids]
     by_id = {a.id: a for a in active}
 
     existing = (await db.execute(select(PeerAssignment))).scalars().all()

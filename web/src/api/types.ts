@@ -5,7 +5,12 @@
 export type LinkState = "up" | "degraded" | "down" | "unknown";
 export type AgentState = "pending" | "active" | "stale" | "revoked";
 
-export type InterfaceRole = "test" | "management" | "ignored" | "unknown";
+export type InterfaceRole =
+  | "test"
+  | "management"
+  | "ignored"
+  | "unknown"
+  | "monitor";
 
 export interface InterfaceView {
   id: number;
@@ -26,6 +31,7 @@ export interface AccessPointView {
   bssids: string[];
   location: string | null;
   notes: string | null;
+  ruckus_serial: string | null;
   created_at: number;
   updated_at: number;
 }
@@ -35,6 +41,7 @@ export interface UnassignedBssidView {
   last_seen_ms: number;
   last_ssid: string | null;
   agent_uids: string[];
+  frequency_mhz?: number | null;
 }
 
 export interface BoostView {
@@ -75,6 +82,110 @@ export interface PassiveLinkStateView {
   since_ts: number;
   loss_pct_1m: number | null;
   rtt_p95_1m: number | null;
+}
+
+// ---- Tools: Attenuator ----------------------------------------------
+
+export interface RuckusApView {
+  serial: string;
+  name: string | null;
+  model: string | null;
+  status: string | null;
+  venue_id: string | null;
+  mapped_ap_id: number | null;
+}
+
+export type TxPowerValue =
+  | "Auto"
+  | "MAX"
+  | "MIN"
+  | "-1" | "-2" | "-3" | "-4" | "-5" | "-6" | "-7" | "-8"
+  | "-9" | "-10" | "-11" | "-12" | "-13" | "-14" | "-15" | "-16"
+  | "-17" | "-18" | "-19" | "-20" | "-21" | "-22" | "-23";
+
+export interface AttenuatorParticipant {
+  ap_id: number;
+  direction: "drop" | "raise";
+  target_value: TxPowerValue;
+}
+
+export interface AttenuatorPresetView {
+  id: number;
+  name: string;
+  radio: "5g" | "24g" | "6g";
+  step_size_db: number;
+  step_interval_s: number;
+  participants: AttenuatorParticipant[];
+  boost_participants: boolean;
+  instant: boolean;
+  created_at: number;
+  updated_at: number;
+}
+
+export interface AttenuatorPresetCreate {
+  name: string;
+  radio?: "5g" | "24g" | "6g";
+  step_size_db?: number;
+  step_interval_s?: number;
+  participants: AttenuatorParticipant[];
+  boost_participants?: boolean;
+  instant?: boolean;
+}
+
+export interface AttenuatorPresetUpdate {
+  name?: string;
+  radio?: "5g" | "24g" | "6g";
+  step_size_db?: number;
+  step_interval_s?: number;
+  participants?: AttenuatorParticipant[];
+  boost_participants?: boolean;
+  instant?: boolean;
+}
+
+export interface StartRunBody {
+  preset_id?: number | null;
+  name?: string | null;
+  radio?: "5g" | "24g" | "6g";
+  step_size_db?: number;
+  step_interval_s?: number;
+  participants?: AttenuatorParticipant[];
+  boost_participants?: boolean;
+  instant?: boolean;
+}
+
+export interface ToolRunStepView {
+  ts_ms: number;
+  ap_serial: string | null;
+  action: Record<string, unknown>;
+  success: boolean;
+  ruckus_request_id: string | null;
+  error: string | null;
+}
+
+export interface ToolRunView {
+  id: number;
+  tool_type: string;
+  preset_id: number | null;
+  state: "running" | "completed" | "failed" | "cancelled" | string;
+  config: Record<string, unknown>;
+  started_at: number;
+  ends_at: number;
+  finalized_at: number | null;
+  error: string | null;
+}
+
+export interface ToolRunDetailView extends ToolRunView {
+  revert_state: Record<string, unknown> | null;
+  steps: ToolRunStepView[];
+}
+
+export interface ActiveToolRunSummary {
+  id: number;
+  tool_type: string;
+  state: string;
+  started_at: number;
+  ends_at: number;
+  config: Record<string, unknown>;
 }
 
 export interface TrendPoint {
@@ -199,6 +310,34 @@ export interface EnrollmentTokenView {
   revoked: boolean;
 }
 
+export interface MonitoredSsidView {
+  id: number;
+  ssid: string;
+  created_at: number;
+}
+
+export interface ScanBssidPoint {
+  ts_ms: number;
+  signal_dbm: number | null;
+}
+
+export interface ScanBssidSeries {
+  bssid: string;
+  ssid: string | null;
+  ap_id: number | null;
+  ap_name: string | null;
+  frequency_mhz: number | null;
+  points: ScanBssidPoint[];
+}
+
+export interface AirspaceResponse {
+  since_ts: number;
+  until_ts: number;
+  agent_uid: string;
+  hostname: string | null;
+  series: ScanBssidSeries[];
+}
+
 export interface SnapshotEvent {
   emitted_at: number;
   agents: AgentView[];
@@ -211,6 +350,8 @@ export interface SnapshotEvent {
   boosts: BoostView[];
   passive_targets: PassiveTargetView[];
   passive_link_states: PassiveLinkStateView[];
+  monitored_ssids: MonitoredSsidView[];
+  active_tool_run: ActiveToolRunSummary | null;
 }
 
 export interface AccessPointCreate {
@@ -224,6 +365,7 @@ export interface AccessPointUpdate {
   name?: string;
   location?: string | null;
   notes?: string | null;
+  ruckus_serial?: string | null;
 }
 
 // ---- mutation payloads --------------------------------------------------

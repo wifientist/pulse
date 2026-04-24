@@ -87,7 +87,8 @@ class AccessPoint(Base):
     Used purely for UI resolution when rendering wireless agent interfaces; no
     runtime coupling to the wireless_interface data path. BSSIDs live in
     `access_point_bssids` — many per AP to accommodate vendors (Ruckus) that
-    broadcast multiple BSSIDs per radio/SSID."""
+    broadcast multiple BSSIDs per radio/SSID. `ruckus_serial` ties the AP to
+    the upstream Ruckus One AP identity so the Attenuator tool can drive it."""
 
     __tablename__ = "access_points"
 
@@ -95,6 +96,9 @@ class AccessPoint(Base):
     name: Mapped[str] = mapped_column(String(64))
     location: Mapped[str | None] = mapped_column(String(128), nullable=True)
     notes: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    ruckus_serial: Mapped[str | None] = mapped_column(
+        String(32), nullable=True, index=True,
+    )
     created_at: Mapped[int] = mapped_column(Integer)
     updated_at: Mapped[int] = mapped_column(Integer)
 
@@ -388,6 +392,42 @@ class WirelessSample(Base):
     )
 
 
+class MonitoredSsid(Base):
+    """Admin-curated allowlist of SSIDs worth recording from monitor-role agents.
+    Incoming scan results whose SSID isn't in this set are dropped server-side —
+    prevents the scan_samples table from filling with neighboring networks we
+    don't care about."""
+
+    __tablename__ = "monitored_ssids"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    ssid: Mapped[str] = mapped_column(String(64), unique=True)
+    created_at: Mapped[int] = mapped_column(Integer)
+
+
+class WirelessScanSample(Base):
+    """One scan result: an (agent, bssid) signal reading at a moment in time.
+    Comes from `iw dev <iface> scan` on a monitor-role agent. Filtered through
+    `monitored_ssids` before insertion. Same retention as `wireless_samples`."""
+
+    __tablename__ = "wireless_scan_samples"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    agent_id: Mapped[int] = mapped_column(Integer)
+    ts_ms: Mapped[int] = mapped_column(Integer)
+    bssid: Mapped[str] = mapped_column(String(17))
+    ssid: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    signal_dbm: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    frequency_mhz: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    channel_width_mhz: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+    __table_args__ = (
+        Index("ix_scan_samples_bssid_ts", "bssid", "ts_ms"),
+        Index("ix_scan_samples_agent_ts", "agent_id", "ts_ms"),
+        Index("ix_scan_samples_ts", "ts_ms"),
+    )
+
+
 class AgentBoost(Base):
     """One row per agent currently in boost mode. While a row exists and
     expires_at > now, poll_service forces this agent's outbound ping interval to
@@ -490,6 +530,63 @@ class PassiveLinkStateRow(Base):
     rtt_p95_1m: Mapped[float | None] = mapped_column(Float, nullable=True)
     candidate_state: Mapped[str | None] = mapped_column(String(16), nullable=True)
     candidate_since_ts: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+
+class AttenuatorPreset(Base):
+    """Reusable per-AP ramp config for the Attenuator tool. One row per saved
+    scenario so the admin can re-run a test without re-keying every detail.
+    `instant=True` means one-shot (no ramp, no restore): apply the target
+    txPower and leave it there."""
+
+    __tablename__ = "attenuator_presets"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    name: Mapped[str] = mapped_column(String(128))
+    radio: Mapped[str] = mapped_column(String(8))  # "5g" | "24g" | "6g"
+    step_size_db: Mapped[int] = mapped_column(Integer)
+    step_interval_s: Mapped[int] = mapped_column(Integer)
+    participants: Mapped[list] = mapped_column(JSON, default=list)
+    boost_participants: Mapped[bool] = mapped_column(Boolean, default=True)
+    instant: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_at: Mapped[int] = mapped_column(Integer)
+    updated_at: Mapped[int] = mapped_column(Integer)
+
+
+class ToolRun(Base):
+    """Polymorphic run row shared across tools. `tool_type` discriminates; the
+    per-tool payload lives in `config`. `revert_state` captures whatever the
+    tool needs to put things back the way they were — for the attenuator
+    that's each AP's pre-run txPower."""
+
+    __tablename__ = "tool_runs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    tool_type: Mapped[str] = mapped_column(String(32))
+    preset_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    state: Mapped[str] = mapped_column(String(16), index=True)
+    config: Mapped[dict] = mapped_column(JSON)
+    revert_state: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    started_at: Mapped[int] = mapped_column(Integer)
+    ends_at: Mapped[int] = mapped_column(Integer)
+    finalized_at: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    error: Mapped[str | None] = mapped_column(String(1024), nullable=True)
+
+
+class ToolRunStep(Base):
+    __tablename__ = "tool_run_steps"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    run_id: Mapped[int] = mapped_column(Integer)
+    ts_ms: Mapped[int] = mapped_column(Integer)
+    ap_serial: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    action: Mapped[dict] = mapped_column(JSON)
+    success: Mapped[bool] = mapped_column(Boolean)
+    ruckus_request_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    error: Mapped[str | None] = mapped_column(String(1024), nullable=True)
+
+    __table_args__ = (
+        Index("ix_tool_run_steps_run", "run_id", "ts_ms"),
+    )
 
 
 class Meta(Base):

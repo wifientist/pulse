@@ -92,6 +92,9 @@ export function buildMeshGraph(
   const agentsByUid = new Map<string, AgentView>();
   for (const a of snapshot.agents) {
     if (a.state === "revoked") continue;
+    // Monitor agents don't participate in the mesh — no pings in or out. Hide
+    // them from the diagram so they don't render as orphan nodes.
+    if (a.interfaces.some((i) => i.role === "monitor")) continue;
     agentsByUid.set(a.agent_uid, a);
   }
 

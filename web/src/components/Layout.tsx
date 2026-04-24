@@ -57,6 +57,16 @@ export default function Layout() {
               Trends
             </NavLink>
             <NavLink
+              to="/tools"
+              className={({ isActive }) =>
+                isActive
+                  ? "text-slate-900 font-medium"
+                  : "text-slate-500 hover:text-slate-900"
+              }
+            >
+              Tools
+            </NavLink>
+            <NavLink
               to="/access-points"
               className={({ isActive }) =>
                 isActive

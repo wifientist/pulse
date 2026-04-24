@@ -160,9 +160,21 @@ async def set_interface_role(
         for i in ifaces:
             if i.mac != mac and i.role == InterfaceRole.TEST.value:
                 i.role = InterfaceRole.UNKNOWN.value
+    prev_role = target.role
     target.role = new_role.value
+    await db.flush()
 
-    await meta_repo.bump(db, meta_repo.PEER_ASSIGNMENTS_VERSION)
+    # Monitor role changes flip the agent in or out of the ping mesh — rebuild
+    # peer_assignments so the existing mesh reflects it immediately.
+    monitor_involved = (
+        new_role == InterfaceRole.MONITOR
+        or prev_role == InterfaceRole.MONITOR.value
+    )
+    if monitor_involved:
+        from pulse_server.services import peer_service
+        await peer_service.recompute_full_mesh(db)
+    else:
+        await meta_repo.bump(db, meta_repo.PEER_ASSIGNMENTS_VERSION)
     await db.commit()
     await db.refresh(agent)
     return await _to_view(db, agent)

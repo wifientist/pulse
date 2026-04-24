@@ -21,6 +21,9 @@ class AgentCaps(BaseModel):
     raw_icmp: bool = False
     container: bool = False
     iperf3_available: bool = False
+    wifi_scan_available: bool = False
+    """True iff `iw` binary is on PATH and the agent has enough privileges to
+    run `iw dev <iface> scan`. Admin UI gates the 'monitor' role on this."""
     agent_version: str = "0.1.0"
     protocol_version: str
 
@@ -90,6 +93,18 @@ class AgentInterface(BaseModel):
     signal_dbm: int | None = None
 
 
+class ScanBssid(BaseModel):
+    """One BSSID visible to a monitor-role agent. Emitted only by agents that
+    have at least one `role=monitor` interface. Server filters against the
+    monitored_ssids allowlist before persisting."""
+
+    bssid: str
+    ssid: str | None = None
+    signal_dbm: int | None = None
+    frequency_mhz: int | None = None
+    channel_width_mhz: int | None = None
+
+
 class PollRequest(BaseModel):
     agent_uid: str
     now_ms: int
@@ -102,6 +117,8 @@ class PollRequest(BaseModel):
     # Optional so older agents (pre-0.2.0) keep working — they just won't get MAC-
     # tracking benefits until they're upgraded.
     interfaces: list[AgentInterface] = Field(default_factory=list)
+    # Populated only on monitor-role agents; empty for every other agent.
+    visible_bssids: list[ScanBssid] = Field(default_factory=list)
 
 
 class PeerAssignment(BaseModel):
@@ -127,6 +144,10 @@ class Command(BaseModel):
 class AgentConfig(BaseModel):
     poll_interval_s: int
     ping_interval_s: int
+    scan_ifaces: list[str] = Field(default_factory=list)
+    """Interface *names* (iface_name) the agent should run `iw scan` on each
+    tick. Populated when the server has classified an interface role=monitor.
+    Empty for ordinary agents — they skip scanning entirely."""
 
 
 class PollResponse(BaseModel):

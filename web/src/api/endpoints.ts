@@ -4,15 +4,24 @@ import type {
   AccessPointUpdate,
   AccessPointView,
   AgentView,
+  AirspaceResponse,
   AlertView,
   ApproveBody,
+  AttenuatorPresetCreate,
+  AttenuatorPresetUpdate,
+  AttenuatorPresetView,
   BoostView,
+  MonitoredSsidView,
   NewEnrollmentTokenBody,
   NewEnrollmentTokenResponse,
   PassiveTargetCreate,
   PassiveTargetUpdate,
   PassiveTargetView,
   PendingEnrollmentView,
+  RuckusApView,
+  StartRunBody,
+  ToolRunDetailView,
+  ToolRunView,
   TrendResponse,
   UnassignedBssidView,
 } from "./types";
@@ -111,6 +120,67 @@ export const startBoost = (agentId: number, durationS: number) =>
 
 export const cancelBoost = (agentId: number) =>
   apiDelete(`/v1/admin/agents/${agentId}/boost`);
+
+// --- Tools: Attenuator -----------------------------------------------
+
+export const listRuckusAps = () =>
+  apiGet<RuckusApView[]>("/v1/admin/tools/attenuator/ruckus-aps");
+
+export const setApRuckusSerial = (apId: number, ruckus_serial: string | null) =>
+  apiPatch<void>(`/v1/admin/tools/attenuator/aps/${apId}`, { ruckus_serial });
+
+export const listAttenuatorPresets = () =>
+  apiGet<AttenuatorPresetView[]>("/v1/admin/tools/attenuator/presets");
+
+export const createAttenuatorPreset = (body: AttenuatorPresetCreate) =>
+  apiPost<AttenuatorPresetView>("/v1/admin/tools/attenuator/presets", body);
+
+export const updateAttenuatorPreset = (
+  id: number,
+  body: AttenuatorPresetUpdate,
+) =>
+  apiPatch<AttenuatorPresetView>(
+    `/v1/admin/tools/attenuator/presets/${id}`,
+    body,
+  );
+
+export const deleteAttenuatorPreset = (id: number) =>
+  apiDelete(`/v1/admin/tools/attenuator/presets/${id}`);
+
+export const listAttenuatorRuns = () =>
+  apiGet<ToolRunView[]>("/v1/admin/tools/attenuator/runs");
+
+export const getAttenuatorRun = (id: number) =>
+  apiGet<ToolRunDetailView>(`/v1/admin/tools/attenuator/runs/${id}`);
+
+export const startAttenuatorRun = (body: StartRunBody) =>
+  apiPost<ToolRunView>("/v1/admin/tools/attenuator/runs", body);
+
+export const cancelAttenuatorRun = (id: number) =>
+  apiPost<ToolRunView>(`/v1/admin/tools/attenuator/runs/${id}/cancel`);
+
+// --- Monitored SSIDs + Airspace --------------------------------------
+
+export const listMonitoredSsids = () =>
+  apiGet<MonitoredSsidView[]>("/v1/admin/monitored-ssids");
+
+export const createMonitoredSsid = (ssid: string) =>
+  apiPost<MonitoredSsidView>("/v1/admin/monitored-ssids", { ssid });
+
+export const deleteMonitoredSsid = (id: number) =>
+  apiDelete(`/v1/admin/monitored-ssids/${id}`);
+
+export const getAirspace = (
+  agentUid: string,
+  sinceTs: number,
+  untilTs: number,
+) => {
+  const p = new URLSearchParams();
+  p.set("agent_uid", agentUid);
+  p.set("since_ts", String(sinceTs));
+  p.set("until_ts", String(untilTs));
+  return apiGet<AirspaceResponse>(`/v1/admin/airspace?${p}`);
+};
 
 // --- Trends ----------------------------------------------------------
 

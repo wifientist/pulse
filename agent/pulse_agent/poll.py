@@ -11,6 +11,7 @@ import httpx
 from pulse_agent.dispatcher import Dispatcher
 from pulse_agent.interfaces import enumerate_interfaces
 from pulse_agent.pinger.scheduler import PeerSpec, PingScheduler
+from pulse_agent.scan import scan as iw_scan
 from pulse_agent.state import AgentRuntimeState
 from pulse_shared.contracts import (
     AgentCaps,
@@ -19,6 +20,7 @@ from pulse_shared.contracts import (
     PingSample,
     PollRequest,
     PollResponse,
+    ScanBssid,
 )
 from pulse_shared.enums import CommandType
 
@@ -48,6 +50,9 @@ class PollLoop:
         self._state = state
         self._interval_s = interval_s
         self._stop = asyncio.Event()
+        # Interfaces the server has asked us to run `iw scan` on each poll.
+        # Populated from PollResponse.config.scan_ifaces; empty by default.
+        self._scan_ifaces: list[str] = []
 
     def stop(self) -> None:
         self._stop.set()
@@ -102,6 +107,22 @@ class PollLoop:
             log.exception("agent.interface_enumeration_failed")
             ifaces = []
 
+        # Airspace scan — only on interfaces the server has designated as
+        # role=monitor. `iw scan` is blocking and can take a second or two; we
+        # run one scan per configured interface per poll.
+        visible: list[ScanBssid] = []
+        for iface_name in self._scan_ifaces:
+            for r in iw_scan(iface_name):
+                visible.append(
+                    ScanBssid(
+                        bssid=r.bssid,
+                        ssid=r.ssid,
+                        signal_dbm=r.signal_dbm,
+                        frequency_mhz=r.frequency_mhz,
+                        channel_width_mhz=r.channel_width_mhz,
+                    )
+                )
+
         req = PollRequest(
             agent_uid=self._agent_uid,
             now_ms=int(time.time() * 1000),
@@ -121,6 +142,7 @@ class PollLoop:
             peers_version_seen=self._state.peers_version_seen,
             dropped_samples_since_last=dropped,
             interfaces=ifaces,
+            visible_bssids=visible,
         )
 
         r = await self._http.post("/v1/agent/poll", json=req.model_dump())
@@ -149,6 +171,10 @@ class PollLoop:
         # Update poll interval if server changed it.
         if resp.config.poll_interval_s and resp.config.poll_interval_s != int(self._interval_s):
             self._interval_s = float(resp.config.poll_interval_s)
+
+        # Refresh the list of interfaces we scan. Changes propagate within one
+        # poll interval of an admin setting/clearing the monitor role.
+        self._scan_ifaces = list(resp.config.scan_ifaces)
 
     async def _handle_command(self, command_id: int, cmd_type: CommandType, payload: dict) -> None:
         result: CommandResult = await self._dispatcher.handle(command_id, cmd_type, payload)

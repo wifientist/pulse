@@ -41,6 +41,39 @@ class Settings(BaseSettings):
     """Absolute path to the built web UI (web/dist/). When set and the directory exists,
     FastAPI serves the SPA at `/`. Unset in dev (Vite dev server serves the UI directly)."""
 
+    # --- Ruckus One (optional; needed for the Attenuator tool) -----------
+    ruckus_region: str = "na"  # na | eu | asia
+    ruckus_tenant_id: str | None = None
+    ruckus_client_id: str | None = None
+    ruckus_client_secret: str | None = None
+    ruckus_venue_id: str | None = None
+
+    @property
+    def ruckus_api_base(self) -> str:
+        return {
+            "na": "https://api.ruckus.cloud",
+            "eu": "https://api.eu.ruckus.cloud",
+            "asia": "https://api.asia.ruckus.cloud",
+        }.get(self.ruckus_region, "https://api.ruckus.cloud")
+
+    @property
+    def ruckus_auth_base(self) -> str:
+        # Auth host mirrors the API host but without the "api." prefix.
+        return {
+            "na": "https://ruckus.cloud",
+            "eu": "https://eu.ruckus.cloud",
+            "asia": "https://asia.ruckus.cloud",
+        }.get(self.ruckus_region, "https://ruckus.cloud")
+
+    @property
+    def ruckus_configured(self) -> bool:
+        return bool(
+            self.ruckus_tenant_id
+            and self.ruckus_client_id
+            and self.ruckus_client_secret
+            and self.ruckus_venue_id
+        )
+
     @property
     def db_url(self) -> str:
         return f"sqlite+aiosqlite:///{self.db_path}"

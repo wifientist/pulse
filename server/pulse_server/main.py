@@ -27,6 +27,7 @@ from pulse_server.logging import configure_logging, get_logger
 from pulse_server.routers import (
     access_points,
     agents,
+    airspace,
     alerts,
     boosts,
     debug,
@@ -39,6 +40,7 @@ from pulse_server.routers import (
     tags,
     telemetry,
     tests,
+    tools,
     trends,
     webhooks,
 )
@@ -61,6 +63,18 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         scheduler = build_scheduler(settings, sessionmaker)
         app.state.scheduler = scheduler
         scheduler.start()
+        # If a tool run was interrupted by a crash last time, mark it failed
+        # and attempt to restore. Ruckus-dependent — skipped when not configured.
+        if settings.ruckus_configured:
+            try:
+                from pulse_server.services import attenuator_service
+                n = await attenuator_service.recover_stale_runs(
+                    sessionmaker, settings,
+                )
+                if n:
+                    log.info("attenuator.recovered", count=n)
+            except Exception:
+                log.exception("attenuator.recover_failed")
         log.info("pulse.started", bind=f"{settings.bind_host}:{settings.bind_port}")
         try:
             yield
@@ -89,7 +103,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(access_points.router)
     app.include_router(passive_targets.router)
     app.include_router(boosts.router)
+    app.include_router(tools.router)
     app.include_router(trends.router)
+    app.include_router(airspace.router)
     app.include_router(events.router)
     app.include_router(debug.router)
 

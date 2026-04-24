@@ -4,7 +4,9 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   addBssidToAp,
   createAccessPoint,
+  createMonitoredSsid,
   deleteAccessPoint,
+  deleteMonitoredSsid,
   listUnassignedBssids,
   removeBssidFromAp,
   updateAccessPoint,
@@ -16,7 +18,7 @@ import type {
   UnassignedBssidView,
 } from "../api/types";
 import { useSnapshotStore } from "../store/snapshot";
-import { formatRelativeFromMs } from "../utils/time";
+import { bandLabel, formatRelativeFromMs } from "../utils/time";
 
 const BSSID_RE = /^[0-9a-fA-F]{2}(:[0-9a-fA-F]{2}){5}$/;
 
@@ -25,6 +27,7 @@ interface EditorState {
   name: string;
   location: string;
   notes: string;
+  ruckus_serial: string;
   // Only used on create — existing APs manage BSSIDs via the row UI after save.
   bssidsOnCreate: string[];
   bssidDraft: string;
@@ -36,6 +39,7 @@ function emptyEditor(): EditorState {
     name: "",
     location: "",
     notes: "",
+    ruckus_serial: "",
     bssidsOnCreate: [],
     bssidDraft: "",
   };
@@ -47,6 +51,7 @@ function editorFromRow(r: AccessPointView): EditorState {
     name: r.name,
     location: r.location ?? "",
     notes: r.notes ?? "",
+    ruckus_serial: r.ruckus_serial ?? "",
     bssidsOnCreate: [],
     bssidDraft: "",
   };
@@ -135,6 +140,7 @@ export default function AccessPointsPage() {
     if (!name) return setError("name required");
     const location = editor.location.trim() || null;
     const notes = editor.notes.trim() || null;
+    const ruckus_serial = editor.ruckus_serial.trim() || null;
     setBusyId(editor.id ?? "new");
     setError(null);
     try {
@@ -145,9 +151,19 @@ export default function AccessPointsPage() {
           location,
           notes,
         };
-        await createAccessPoint(body);
+        const created = await createAccessPoint(body);
+        // The create endpoint doesn't accept ruckus_serial; set it via patch
+        // when provided so the mapping lands immediately.
+        if (ruckus_serial) {
+          await updateAccessPoint(created.id, { ruckus_serial });
+        }
       } else {
-        const body: AccessPointUpdate = { name, location, notes };
+        const body: AccessPointUpdate = {
+          name,
+          location,
+          notes,
+          ruckus_serial,
+        };
         await updateAccessPoint(editor.id, body);
       }
       setEditor(null);
@@ -266,6 +282,7 @@ export default function AccessPointsPage() {
             <thead className="text-xs text-slate-500 uppercase bg-slate-50">
               <tr>
                 <th className="px-4 py-2 text-left font-medium">BSSID</th>
+                <th className="px-4 py-2 text-left font-medium">Band</th>
                 <th className="px-4 py-2 text-left font-medium">SSID</th>
                 <th className="px-4 py-2 text-left font-medium">Seen by</th>
                 <th className="px-4 py-2 text-left font-medium">Last seen</th>
@@ -276,6 +293,23 @@ export default function AccessPointsPage() {
               {unassigned.map((u) => (
                 <tr key={u.bssid} className="hover:bg-slate-50">
                   <td className="px-4 py-2 font-mono text-slate-700">{u.bssid}</td>
+                  <td className="px-4 py-2">
+                    {bandLabel(u.frequency_mhz) ? (
+                      <span
+                        className={
+                          bandLabel(u.frequency_mhz) === "2.4 GHz"
+                            ? "inline-block px-1.5 py-0.5 rounded bg-amber-50 text-amber-700 text-[10px] font-semibold"
+                            : bandLabel(u.frequency_mhz) === "5 GHz"
+                              ? "inline-block px-1.5 py-0.5 rounded bg-sky-50 text-sky-700 text-[10px] font-semibold"
+                              : "inline-block px-1.5 py-0.5 rounded bg-violet-50 text-violet-700 text-[10px] font-semibold"
+                        }
+                      >
+                        {bandLabel(u.frequency_mhz)}
+                      </span>
+                    ) : (
+                      <span className="text-xs text-slate-400">—</span>
+                    )}
+                  </td>
                   <td className="px-4 py-2 text-slate-700">
                     {u.last_ssid ?? "—"}
                   </td>
@@ -334,6 +368,7 @@ export default function AccessPointsPage() {
             <tr>
               <th className="px-4 py-2 text-left font-medium">Name</th>
               <th className="px-4 py-2 text-left font-medium">BSSIDs</th>
+              <th className="px-4 py-2 text-left font-medium">Ruckus serial</th>
               <th className="px-4 py-2 text-left font-medium">Location</th>
               <th className="px-4 py-2 text-left font-medium">Notes</th>
               <th className="px-4 py-2 text-left font-medium">Updated</th>
@@ -370,6 +405,11 @@ export default function AccessPointsPage() {
                     </ul>
                   )}
                 </td>
+                <td className="px-4 py-2 font-mono text-xs text-slate-600">
+                  {r.ruckus_serial ?? (
+                    <span className="text-slate-400 not-italic">—</span>
+                  )}
+                </td>
                 <td className="px-4 py-2 text-slate-600">
                   {r.location ?? "—"}
                 </td>
@@ -400,7 +440,7 @@ export default function AccessPointsPage() {
             {sorted.length === 0 ? (
               <tr>
                 <td
-                  colSpan={6}
+                  colSpan={7}
                   className="px-4 py-6 text-center text-slate-500 text-sm"
                 >
                   No access points yet.
@@ -410,6 +450,8 @@ export default function AccessPointsPage() {
           </tbody>
         </table>
       </section>
+
+      <MonitoredSsidsSection />
 
       {editor ? (
         <div className="fixed inset-0 z-20 grid place-items-center bg-black/30">
@@ -451,6 +493,23 @@ export default function AccessPointsPage() {
                   }
                   className="w-full border border-slate-200 rounded px-2 py-1"
                   placeholder="Optional — e.g. upstairs hallway"
+                />
+              </label>
+              <label className="col-span-2">
+                <div className="text-xs text-slate-500 mb-1">
+                  Ruckus AP serial
+                  <span className="ml-1 text-slate-400 font-normal">
+                    (links this AP to its upstream Ruckus One identity so the
+                    Attenuator tool can drive it)
+                  </span>
+                </div>
+                <input
+                  value={editor.ruckus_serial}
+                  onChange={(e) =>
+                    setEditor({ ...editor, ruckus_serial: e.target.value })
+                  }
+                  className="w-full border border-slate-200 rounded px-2 py-1 font-mono"
+                  placeholder="e.g. 382443000630 — leave blank to unmap"
                 />
               </label>
               <label className="col-span-2">
@@ -541,5 +600,118 @@ export default function AccessPointsPage() {
         </div>
       ) : null}
     </div>
+  );
+}
+
+
+function MonitoredSsidsSection() {
+  const snapshot = useSnapshotStore((s) => s.snapshot);
+  const ssids = snapshot?.monitored_ssids ?? [];
+  const [draft, setDraft] = useState("");
+  const [busy, setBusy] = useState<number | "new" | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+
+  const hasMonitorAgent = useMemo(
+    () =>
+      (snapshot?.agents ?? []).some((a) =>
+        a.interfaces.some((i) => i.role === "monitor"),
+      ),
+    [snapshot?.agents],
+  );
+
+  const onAdd = async () => {
+    const ssid = draft.trim();
+    if (!ssid) return;
+    setErr(null);
+    setBusy("new");
+    try {
+      await createMonitoredSsid(ssid);
+      setDraft("");
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "add failed");
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const onDelete = async (id: number, ssid: string) => {
+    if (!window.confirm(`Stop monitoring "${ssid}"?`)) return;
+    setErr(null);
+    setBusy(id);
+    try {
+      await deleteMonitoredSsid(id);
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "remove failed");
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  return (
+    <section className="bg-white rounded-lg border border-slate-200 overflow-hidden">
+      <header className="px-4 py-2 border-b border-slate-200">
+        <h2 className="text-sm font-medium text-slate-900">Monitored SSIDs</h2>
+        <p className="text-xs text-slate-500 mt-0.5">
+          Airspace-scan allowlist. A monitor-role agent reports every visible
+          BSSID; only entries whose SSID appears here are kept. Set an
+          interface's role to <span className="font-medium">monitor</span> on
+          the Agents page to start scanning.
+        </p>
+      </header>
+      <div className="px-4 py-3 space-y-3">
+        {!hasMonitorAgent ? (
+          <div className="px-3 py-2 rounded bg-amber-50 text-amber-800 text-xs">
+            No monitor-role interface exists yet — add one on the Agents page
+            to begin collecting scan samples.
+          </div>
+        ) : null}
+        {err ? (
+          <div className="px-3 py-2 bg-rose-50 text-rose-700 text-xs rounded">
+            {err}
+          </div>
+        ) : null}
+        <div className="flex items-center gap-2">
+          <input
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") onAdd();
+            }}
+            placeholder="SSID to watch"
+            className="flex-1 border border-slate-200 rounded px-2 py-1 text-sm"
+            disabled={busy === "new"}
+          />
+          <button
+            onClick={onAdd}
+            disabled={!draft.trim() || busy === "new"}
+            className="inline-flex items-center gap-1 px-3 py-1.5 rounded bg-sky-500 text-white hover:bg-sky-600 text-sm disabled:opacity-50"
+          >
+            <Plus className="w-4 h-4" /> Watch
+          </button>
+        </div>
+        {ssids.length === 0 ? (
+          <div className="text-xs text-slate-500">None yet.</div>
+        ) : (
+          <ul className="flex flex-wrap gap-2">
+            {ssids.map((s) => (
+              <li
+                key={s.id}
+                className="inline-flex items-center gap-1.5 px-2 py-1 rounded bg-slate-100 text-sm text-slate-700"
+              >
+                <span className="font-mono">{s.ssid}</span>
+                <button
+                  onClick={() => onDelete(s.id, s.ssid)}
+                  disabled={busy === s.id}
+                  className="text-slate-400 hover:text-rose-600 disabled:opacity-50"
+                  title="Stop monitoring"
+                >
+                  <X className="w-3.5 h-3.5" />
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+    </section>
   );
 }

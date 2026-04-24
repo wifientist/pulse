@@ -9,8 +9,10 @@ import Layout from "./components/Layout";
 import { useSnapshotStream } from "./hooks/useSnapshotStream";
 import AccessPointsPage from "./pages/AccessPointsPage";
 import AgentsPage from "./pages/AgentsPage";
+import AttenuatorPage from "./pages/AttenuatorPage";
 import DashboardPage from "./pages/DashboardPage";
 import LoginPage from "./pages/LoginPage";
+import ToolsPage from "./pages/ToolsPage";
 import TrendsPage from "./pages/TrendsPage";
 import { useAuthStore } from "./store/auth";
 
@@ -51,6 +53,8 @@ export default function App() {
           <Route path="/agents" element={<AgentsPage />} />
           <Route path="/deep-dive" element={<Navigate to="/trends" replace />} />
           <Route path="/trends" element={<TrendsPage />} />
+          <Route path="/tools" element={<ToolsPage />} />
+          <Route path="/tools/attenuator" element={<AttenuatorPage />} />
           <Route path="/access-points" element={<AccessPointsPage />} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Route>

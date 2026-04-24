@@ -36,10 +36,12 @@ from pulse_server.db.models import (
     Alert,
     EnrollmentToken,
     LinkStateRow,
+    MonitoredSsid,
     PassiveLinkStateRow,
     PassiveTarget,
     PeerAssignment,
     PendingEnrollment,
+    ToolRun,
 )
 from pulse_server.db.session import get_db
 from pulse_server.security.deps import require_admin
@@ -240,6 +242,7 @@ async def build_snapshot(db: AsyncSession) -> dict:
             "bssids": bssids_by_ap.get(r.id, []),
             "location": r.location,
             "notes": r.notes,
+            "ruckus_serial": r.ruckus_serial,
             "created_at": r.created_at,
             "updated_at": r.updated_at,
         }
@@ -292,6 +295,33 @@ async def build_snapshot(db: AsyncSession) -> dict:
         for r in passive_link_rows
     ]
 
+    monitored_ssid_rows = (
+        await db.execute(select(MonitoredSsid).order_by(MonitoredSsid.ssid))
+    ).scalars().all()
+    monitored_ssids_payload = [
+        {"id": r.id, "ssid": r.ssid, "created_at": r.created_at}
+        for r in monitored_ssid_rows
+    ]
+
+    active_run_row = (
+        await db.execute(
+            select(ToolRun)
+            .where(ToolRun.state == "running")
+            .order_by(desc(ToolRun.started_at))
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    active_run_payload: dict | None = None
+    if active_run_row is not None:
+        active_run_payload = {
+            "id": active_run_row.id,
+            "tool_type": active_run_row.tool_type,
+            "state": active_run_row.state,
+            "started_at": active_run_row.started_at,
+            "ends_at": active_run_row.ends_at,
+            "config": active_run_row.config,
+        }
+
     return {
         "emitted_at": now,
         "agents": agents_payload,
@@ -304,6 +334,8 @@ async def build_snapshot(db: AsyncSession) -> dict:
         "boosts": boosts_payload,
         "passive_targets": passive_payload,
         "passive_link_states": passive_links_payload,
+        "monitored_ssids": monitored_ssids_payload,
+        "active_tool_run": active_run_payload,
     }
 
 

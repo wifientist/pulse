@@ -57,7 +57,7 @@ UNIT_PATH=/etc/systemd/system/pulse-agent.service
 echo "[pulse] installing system packages"
 DEBIAN_FRONTEND=noninteractive apt-get update -qq
 DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-  python3 python3-venv python3-pip iputils-ping iperf3 >/dev/null
+  python3 python3-venv python3-pip iputils-ping iperf3 iw >/dev/null
 
 echo "[pulse] extracting source to $SRC_DIR"
 mkdir -p "$INSTALL_ROOT"

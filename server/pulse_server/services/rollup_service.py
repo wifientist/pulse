@@ -30,6 +30,7 @@ from pulse_server.db.models import (
     PingAggregateMinute,
     PingSampleRaw,
     WirelessSample,
+    WirelessScanSample,
 )
 from pulse_server.repo import meta_repo
 
@@ -468,6 +469,7 @@ class PruneSummary:
     raw_deleted: int
     minute_deleted: int
     wireless_deleted: int = 0
+    scan_deleted: int = 0
 
 
 async def prune(
@@ -564,8 +566,31 @@ async def prune(
         if len(ids) < chunk:
             break
 
+    # Scan samples share the raw retention horizon — same reporting cadence
+    # as wireless_samples.
+    scan_cutoff = now_ms - settings.raw_retention_hours * HOUR_MS
+    scan_deleted = 0
+    while True:
+        ids = (
+            await db.execute(
+                select(WirelessScanSample.id)
+                .where(WirelessScanSample.ts_ms < scan_cutoff)
+                .limit(chunk)
+            )
+        ).scalars().all()
+        if not ids:
+            break
+        await db.execute(
+            delete(WirelessScanSample).where(WirelessScanSample.id.in_(ids))
+        )
+        scan_deleted += len(ids)
+        await db.commit()
+        if len(ids) < chunk:
+            break
+
     return PruneSummary(
         raw_deleted=raw_deleted,
         minute_deleted=minute_deleted,
         wireless_deleted=wireless_deleted,
+        scan_deleted=scan_deleted,
     )

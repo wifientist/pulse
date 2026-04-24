@@ -51,12 +51,15 @@ async def _main(settings: AgentSettings) -> int:
     hostname = detect_hostname(settings.hostname)
     primary_ip = settings.reported_ip or detect_primary_ip(settings.primary_iface)
 
+    from pulse_agent.scan import is_scan_available
+
     caps = AgentCaps(
         os=caps_platform.os,
         platform_tag=caps_platform.platform_tag,
         raw_icmp=caps_platform.raw_icmp,
         container=caps_platform.container,
         iperf3_available=caps_platform.iperf3_available,
+        wifi_scan_available=is_scan_available(),
         agent_version=AGENT_VERSION,
         protocol_version=PROTOCOL_VERSION,
     )

@@ -16,7 +16,12 @@ from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from pulse_server.db.models import AccessPoint, AccessPointBssid, WirelessSample
+from pulse_server.db.models import (
+    AccessPoint,
+    AccessPointBssid,
+    WirelessSample,
+    WirelessScanSample,
+)
 from pulse_server.db.session import get_db
 from pulse_server.security.deps import require_admin
 
@@ -42,6 +47,7 @@ class AccessPointView(BaseModel):
     bssids: list[str]
     location: str | None
     notes: str | None
+    ruckus_serial: str | None
     created_at: int
     updated_at: int
 
@@ -62,6 +68,8 @@ class AccessPointUpdate(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=64)
     location: str | None = Field(default=None, max_length=128)
     notes: str | None = Field(default=None, max_length=512)
+    # Empty string treated as "clear the mapping"; omit to leave unchanged.
+    ruckus_serial: str | None = Field(default=None, max_length=32)
 
 
 class BssidAddBody(BaseModel):
@@ -78,6 +86,10 @@ class UnassignedBssidView(BaseModel):
     last_seen_ms: int
     last_ssid: str | None
     agent_uids: list[str]
+    frequency_mhz: int | None = None
+    """Populated when the BSSID was observed by a monitor-role agent scan.
+    Client-connected BSSIDs have no frequency in wireless_samples so this is
+    null for them; UI renders "2.4 GHz" / "5 GHz" / "6 GHz" badges from this."""
 
 
 async def _bssids_for(db: AsyncSession, ap_id: int) -> list[str]:
@@ -99,6 +111,7 @@ async def _view(db: AsyncSession, r: AccessPoint) -> AccessPointView:
         bssids=bssids,
         location=r.location,
         notes=r.notes,
+        ruckus_serial=r.ruckus_serial,
         created_at=r.created_at,
         updated_at=r.updated_at,
     )
@@ -118,63 +131,117 @@ async def list_access_points(
 async def list_unassigned_bssids(
     db: AsyncSession = Depends(get_db),
 ) -> list[UnassignedBssidView]:
-    """BSSIDs observed in wireless_samples (retention window) that aren't
-    currently bound to any AP. Latest SSID + last-seen ms + reporting agents
-    are included so the admin has context when deciding which AP to attach."""
+    """BSSIDs seen in the retention window (either by a client connecting
+    — `wireless_samples` — or by a monitor-agent airspace scan —
+    `wireless_scan_samples`) that aren't currently bound to any AP. Latest
+    SSID + last-seen ms + observing agents are included so the admin has
+    context when deciding which AP to attach."""
     assigned = (
         await db.execute(select(AccessPointBssid.bssid))
     ).scalars().all()
     assigned_set = set(assigned)
 
-    # Latest row per BSSID (group-by MAX(ts)).
-    latest_rows = (
-        await db.execute(
-            select(
-                WirelessSample.bssid,
-                func.max(WirelessSample.ts_ms).label("last_seen_ms"),
-            )
-            .where(WirelessSample.bssid.is_not(None))
-            .group_by(WirelessSample.bssid)
-        )
-    ).all()
-    out: list[UnassignedBssidView] = []
-    for row in latest_rows:
-        bssid = row.bssid
-        if not bssid or bssid in assigned_set:
-            continue
-        # Most-recent full sample for SSID + reporting agent list.
-        last = (
+    # Merge both "seen" sources: client connections and airspace scans. Each
+    # contributes (bssid, max_ts, observing_agent_ids, latest_ssid); we pick
+    # the newer timestamp + union the agent sets per BSSID.
+    from pulse_server.db.models import Agent
+
+    merged: dict[
+        str, dict[str, object]
+    ] = {}
+
+    async def _ingest_source(
+        bssid_col, ts_col, ssid_col, agent_col, freq_col=None,
+    ) -> None:
+        # MAX(ts) per bssid for last_seen, plus a sweep of distinct agent_ids
+        # and the most-recent ssid. `freq_col` is only set for the scan table
+        # (client-connection samples don't record frequency).
+        maxes = (
             await db.execute(
-                select(WirelessSample)
-                .where(WirelessSample.bssid == bssid)
-                .order_by(WirelessSample.ts_ms.desc())
-                .limit(1)
+                select(bssid_col, func.max(ts_col))
+                .where(bssid_col.is_not(None))
+                .group_by(bssid_col)
             )
-        ).scalar_one_or_none()
-        agent_ids = (
-            await db.execute(
-                select(WirelessSample.agent_id)
-                .where(WirelessSample.bssid == bssid)
-                .group_by(WirelessSample.agent_id)
+        ).all()
+        for bssid, last_ts in maxes:
+            if not bssid or bssid in assigned_set:
+                continue
+            entry = merged.setdefault(
+                bssid,
+                {
+                    "last_seen_ms": 0,
+                    "last_ssid": None,
+                    "agent_ids": set(),
+                    "frequency_mhz": None,
+                },
             )
-        ).scalars().all()
-        uids: list[str] = []
-        if agent_ids:
-            from pulse_server.db.models import Agent
-            uid_rows = (
+            if int(last_ts) > int(entry["last_seen_ms"]):  # type: ignore[arg-type]
+                entry["last_seen_ms"] = int(last_ts)
+                # Pick up SSID (+ frequency, when available) from the latest
+                # row for this bssid.
+                cols = [ssid_col] + ([freq_col] if freq_col is not None else [])
+                latest = (
+                    await db.execute(
+                        select(*cols)
+                        .where(bssid_col == bssid, ts_col == last_ts)
+                        .limit(1)
+                    )
+                ).first()
+                if latest:
+                    if latest[0]:
+                        entry["last_ssid"] = latest[0]
+                    if freq_col is not None and len(latest) > 1 and latest[1]:
+                        entry["frequency_mhz"] = int(latest[1])
+            ag_ids = (
                 await db.execute(
-                    select(Agent.agent_uid).where(Agent.id.in_(list(agent_ids)))
+                    select(agent_col)
+                    .where(bssid_col == bssid)
+                    .group_by(agent_col)
                 )
             ).scalars().all()
-            uids = list(uid_rows)
-        out.append(
-            UnassignedBssidView(
-                bssid=bssid,
-                last_seen_ms=int(row.last_seen_ms),
-                last_ssid=last.ssid if last else None,
-                agent_uids=uids,
+            entry["agent_ids"].update(int(a) for a in ag_ids)  # type: ignore[union-attr]
+
+    await _ingest_source(
+        WirelessSample.bssid,
+        WirelessSample.ts_ms,
+        WirelessSample.ssid,
+        WirelessSample.agent_id,
+    )
+    await _ingest_source(
+        WirelessScanSample.bssid,
+        WirelessScanSample.ts_ms,
+        WirelessScanSample.ssid,
+        WirelessScanSample.agent_id,
+        WirelessScanSample.frequency_mhz,
+    )
+
+    # Resolve agent_ids → uids in one sweep across every bssid.
+    all_ids: set[int] = set()
+    for entry in merged.values():
+        all_ids |= entry["agent_ids"]  # type: ignore[operator]
+    id_to_uid: dict[int, str] = {}
+    if all_ids:
+        uid_rows = (
+            await db.execute(
+                select(Agent.id, Agent.agent_uid).where(Agent.id.in_(list(all_ids)))
             )
+        ).all()
+        id_to_uid = {int(pk): uid for pk, uid in uid_rows}
+
+    out = [
+        UnassignedBssidView(
+            bssid=bssid,
+            last_seen_ms=int(entry["last_seen_ms"]),  # type: ignore[arg-type]
+            last_ssid=entry["last_ssid"],  # type: ignore[arg-type]
+            agent_uids=sorted(
+                id_to_uid[aid]
+                for aid in entry["agent_ids"]  # type: ignore[union-attr]
+                if aid in id_to_uid
+            ),
+            frequency_mhz=entry["frequency_mhz"],  # type: ignore[arg-type]
         )
+        for bssid, entry in merged.items()
+    ]
     # Newest-first so the admin sees what's currently on the air at the top.
     out.sort(key=lambda x: x.last_seen_ms, reverse=True)
     return out
@@ -234,6 +301,22 @@ async def update_access_point(
         row.location = body.location or None
     if body.notes is not None:
         row.notes = body.notes or None
+    if body.ruckus_serial is not None:
+        new_serial = body.ruckus_serial.strip() or None
+        # Uniqueness: steal the serial from any other AP currently claiming it,
+        # same semantics as the attenuator's mapping endpoint.
+        if new_serial and new_serial != row.ruckus_serial:
+            clash = (
+                await db.execute(
+                    select(AccessPoint).where(
+                        AccessPoint.ruckus_serial == new_serial,
+                        AccessPoint.id != ap_id,
+                    )
+                )
+            ).scalars().all()
+            for other in clash:
+                other.ruckus_serial = None
+        row.ruckus_serial = new_serial
     row.updated_at = int(time.time() * 1000)
     await db.commit()
     await db.refresh(row)

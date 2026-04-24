@@ -14,7 +14,13 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from pulse_server.config import Settings
-from pulse_server.db.models import Agent, AgentInterface, WirelessSample
+from pulse_server.db.models import (
+    Agent,
+    AgentInterface,
+    MonitoredSsid,
+    WirelessSample,
+    WirelessScanSample,
+)
 from pulse_server.repo import command_repo, meta_repo, ping_repo
 from pulse_server.services import iperf3_orchestrator, peer_service, test_orchestrator
 from pulse_shared.contracts import (
@@ -33,6 +39,21 @@ def _now_ms() -> int:
 
 def _normalize_mac(mac: str) -> str:
     return mac.strip().lower()
+
+
+# Wifi signal sanity window. Anything above -10 dBm or below -100 is almost
+# certainly a driver glitch (e.g. iw reporting mid-roam settling). Treat those
+# samples as "no reading" so downstream charts aren't distorted by outliers.
+_SIGNAL_MAX_DBM = -10
+_SIGNAL_MIN_DBM = -100
+
+
+def _sanitize_signal(dbm: int | None) -> int | None:
+    if dbm is None:
+        return None
+    if dbm > _SIGNAL_MAX_DBM or dbm < _SIGNAL_MIN_DBM:
+        return None
+    return dbm
 
 
 async def _upsert_agent_interfaces(
@@ -64,6 +85,7 @@ async def _upsert_agent_interfaces(
         mac = _normalize_mac(iface.mac)
         if not mac:
             continue
+        clean_signal = _sanitize_signal(iface.signal_dbm)
         row = existing_by_mac.get(mac)
         if row is None:
             role = "test" if (not has_test_role and i == 0) else "unknown"
@@ -75,7 +97,7 @@ async def _upsert_agent_interfaces(
                 role=role,
                 ssid=iface.ssid,
                 bssid=iface.bssid,
-                signal_dbm=iface.signal_dbm,
+                signal_dbm=clean_signal,
                 first_seen=now_ms,
                 last_seen=now_ms,
             )
@@ -90,7 +112,7 @@ async def _upsert_agent_interfaces(
             row.iface_name = iface.iface_name
             row.ssid = iface.ssid
             row.bssid = iface.bssid
-            row.signal_dbm = iface.signal_dbm
+            row.signal_dbm = clean_signal
             row.last_seen = now_ms
 
         # Wireless interfaces contribute a time-series sample on every poll so deep-
@@ -105,7 +127,7 @@ async def _upsert_agent_interfaces(
                     ts_ms=now_ms,
                     ssid=iface.ssid,
                     bssid=iface.bssid,
-                    signal_dbm=iface.signal_dbm,
+                    signal_dbm=clean_signal,
                 )
             )
 
@@ -180,6 +202,30 @@ async def handle_poll(
     await ping_repo.insert_samples(db, agent.id, body.ping_samples)
     _ = peer_version_bumped  # read by step 5 indirectly via meta_repo
 
+    # 2c. Airspace scan results from monitor-role agents. Filter through the
+    # monitored_ssids allowlist before persisting so unrelated neighbor APs
+    # don't balloon the table. Hidden SSIDs (ssid=None) are dropped.
+    if body.visible_bssids:
+        allowed = set(
+            (
+                await db.execute(select(MonitoredSsid.ssid))
+            ).scalars().all()
+        )
+        for v in body.visible_bssids:
+            if not v.ssid or v.ssid not in allowed:
+                continue
+            db.add(
+                WirelessScanSample(
+                    agent_id=agent.id,
+                    ts_ms=now,
+                    bssid=v.bssid.lower(),
+                    ssid=v.ssid,
+                    signal_dbm=_sanitize_signal(v.signal_dbm),
+                    frequency_mhz=v.frequency_mhz,
+                    channel_width_mhz=v.channel_width_mhz,
+                )
+            )
+
     # 3. Record command results, then fan out to the test orchestrator so any linked
     #    Test row can advance its state.
     for r in body.command_results:
@@ -215,7 +261,6 @@ async def handle_poll(
         # Need target uids to hand back — fetch in one query via ORM relationships is
         # overkill; just select ids → uids here.
         from pulse_server.db.models import Agent as AgentModel
-        from sqlalchemy import select
 
         target_ids = {r.target_agent_id for r in rows}
         id_to_uid = {}
@@ -295,6 +340,20 @@ async def handle_poll(
                 )
             )
 
+    # Collect interface names the admin has flagged role=monitor so the agent
+    # knows to scan them. Done before commit so it sees the current state even
+    # if this same poll just upserted the interface.
+    monitor_iface_rows = (
+        await db.execute(
+            select(AgentInterface.iface_name).where(
+                AgentInterface.agent_id == agent.id,
+                AgentInterface.role == "monitor",
+                AgentInterface.iface_name.is_not(None),
+            )
+        )
+    ).scalars().all()
+    scan_ifaces = [n for n in monitor_iface_rows if n]
+
     await db.commit()
 
     # Refresh IDs after commit (SQLAlchemy assigned them during flush; this is belt &
@@ -318,6 +377,7 @@ async def handle_poll(
         config=AgentConfig(
             poll_interval_s=agent.poll_interval_s,
             ping_interval_s=agent.ping_interval_s,
+            scan_ifaces=scan_ifaces,
         ),
         peer_assignments_version=current_version,
         peer_assignments=peer_dtos,
