@@ -55,6 +55,7 @@ class AgentView(BaseModel):
     agent_version: str | None
     caps: dict
     interfaces: list[InterfaceView]
+    paused: bool = False
 
 
 class SetInterfaceRoleBody(BaseModel):
@@ -106,6 +107,7 @@ async def _to_view(db: AsyncSession, a: Agent) -> AgentView:
         agent_version=a.agent_version,
         caps=a.platform_caps if isinstance(a.platform_caps, dict) else {},
         interfaces=await _load_interfaces(db, a.id),
+        paused=bool(a.paused),
     )
 
 
@@ -121,6 +123,83 @@ async def get_agent(agent_id: int, db: AsyncSession = Depends(get_db)) -> AgentV
     if row is None:
         raise HTTPException(404, "agent not found")
     return await _to_view(db, row)
+
+
+class PauseSummary(BaseModel):
+    affected: int
+
+
+@router.post("/{agent_id}/pause", response_model=AgentView)
+async def pause_agent(
+    agent_id: int, db: AsyncSession = Depends(get_db),
+) -> AgentView:
+    """Soft-stop the agent — server returns no peers + no commands +
+    no scan_ifaces on its next poll. Idempotent."""
+    row = await db.get(Agent, agent_id)
+    if row is None:
+        raise HTTPException(404, "agent not found")
+    if not row.paused:
+        row.paused = True
+        # Bump so this agent's next poll picks up the empty peer list
+        # immediately. (Other agents don't need to refetch — pings into the
+        # paused agent are unaffected.)
+        await meta_repo.bump(db, meta_repo.PEER_ASSIGNMENTS_VERSION)
+    await db.commit()
+    await db.refresh(row)
+    return await _to_view(db, row)
+
+
+@router.post("/{agent_id}/resume", response_model=AgentView)
+async def resume_agent(
+    agent_id: int, db: AsyncSession = Depends(get_db),
+) -> AgentView:
+    row = await db.get(Agent, agent_id)
+    if row is None:
+        raise HTTPException(404, "agent not found")
+    if row.paused:
+        row.paused = False
+        await meta_repo.bump(db, meta_repo.PEER_ASSIGNMENTS_VERSION)
+    await db.commit()
+    await db.refresh(row)
+    return await _to_view(db, row)
+
+
+@router.post("/pause-all", response_model=PauseSummary)
+async def pause_all_agents(
+    db: AsyncSession = Depends(get_db),
+) -> PauseSummary:
+    """Set paused=True on every non-revoked agent. Returns count flipped."""
+    rows = (
+        await db.execute(
+            select(Agent).where(
+                Agent.state != "revoked",
+                Agent.paused.is_(False),
+            )
+        )
+    ).scalars().all()
+    for r in rows:
+        r.paused = True
+    if rows:
+        await meta_repo.bump(db, meta_repo.PEER_ASSIGNMENTS_VERSION)
+    await db.commit()
+    return PauseSummary(affected=len(rows))
+
+
+@router.post("/resume-all", response_model=PauseSummary)
+async def resume_all_agents(
+    db: AsyncSession = Depends(get_db),
+) -> PauseSummary:
+    rows = (
+        await db.execute(
+            select(Agent).where(Agent.paused.is_(True))
+        )
+    ).scalars().all()
+    for r in rows:
+        r.paused = False
+    if rows:
+        await meta_repo.bump(db, meta_repo.PEER_ASSIGNMENTS_VERSION)
+    await db.commit()
+    return PauseSummary(affected=len(rows))
 
 
 @router.post("/{agent_id}/set-interface-role", response_model=AgentView)

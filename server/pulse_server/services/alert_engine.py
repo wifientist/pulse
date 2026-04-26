@@ -74,8 +74,23 @@ async def evaluate(
         )
     ).scalars().all()
 
+    # Pairs where either side is paused get no evaluation — otherwise pause +
+    # resume would emit a flurry of down→up alerts as the freshly-resumed
+    # agent's link comes back. The link_states row keeps its last value
+    # until the resume settles.
+    paused_ids = {
+        int(i)
+        for i in (
+            await db.execute(
+                select(Agent.id).where(Agent.paused.is_(True))
+            )
+        ).scalars().all()
+    }
+
     transitions = 0
     for agg in aggs:
+        if agg.source_agent_id in paused_ids or agg.target_agent_id in paused_ids:
+            continue
         desired = _derive(agg.sent, agg.lost, agg.rtt_p95, settings)
         loss_pct = 100.0 * agg.lost / agg.sent if agg.sent else None
 
@@ -174,6 +189,8 @@ async def evaluate(
         )
     ).scalars().all()
     for agg in passive_aggs:
+        if agg.source_agent_id in paused_ids:
+            continue
         desired = _derive(agg.sent, agg.lost, agg.rtt_p95, settings)
         loss_pct = 100.0 * agg.lost / agg.sent if agg.sent else None
 

@@ -127,6 +127,7 @@ async def build_snapshot(db: AsyncSession) -> dict:
             "agent_version": a.agent_version,
             "caps": a.platform_caps if isinstance(a.platform_caps, dict) else {},
             "interfaces": ifaces_by_agent.get(a.id, []),
+            "paused": bool(a.paused),
         }
         for a in agent_rows
     ]

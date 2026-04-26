@@ -26,16 +26,22 @@ const HANDLE_CLASS =
 function AgentBody({ data }: { data: MeshNodeData }) {
   const a = data.agent!;
   const border = stateToBorder[a.state] ?? "border-l-slate-400";
+  const paused = !!a.paused;
   return (
     <div
-      className={`bg-white shadow rounded-md border border-slate-200 border-l-4 ${border} px-3 py-2 min-w-[180px] relative`}
+      className={`bg-white shadow rounded-md border border-slate-200 border-l-4 ${border} px-3 py-2 min-w-[180px] relative ${paused ? "opacity-60" : ""}`}
     >
       <Handle type="source" position={Position.Top} id="top" className={HANDLE_CLASS} />
       <Handle type="source" position={Position.Right} id="right" className={HANDLE_CLASS} />
       <Handle type="source" position={Position.Bottom} id="bottom" className={HANDLE_CLASS} />
       <Handle type="source" position={Position.Left} id="left" className={HANDLE_CLASS} />
-      <div className="text-sm font-semibold text-slate-900 truncate">
-        {a.hostname}
+      <div className="text-sm font-semibold text-slate-900 truncate flex items-center gap-1.5">
+        <span className="truncate">{a.hostname}</span>
+        {paused ? (
+          <span className="px-1 rounded bg-amber-100 text-amber-800 text-[9px] font-semibold shrink-0">
+            paused
+          </span>
+        ) : null}
       </div>
       <div className="text-xs text-slate-500 font-mono truncate">
         {a.primary_ip ?? "—"}

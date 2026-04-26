@@ -77,6 +77,18 @@ export const upgradeAgent = (agentId: number) =>
     `/v1/admin/agents/${agentId}/upgrade`,
   );
 
+export const pauseAgent = (agentId: number) =>
+  apiPost<AgentView>(`/v1/admin/agents/${agentId}/pause`);
+
+export const resumeAgent = (agentId: number) =>
+  apiPost<AgentView>(`/v1/admin/agents/${agentId}/resume`);
+
+export const pauseAllAgents = () =>
+  apiPost<{ affected: number }>("/v1/admin/agents/pause-all");
+
+export const resumeAllAgents = () =>
+  apiPost<{ affected: number }>("/v1/admin/agents/resume-all");
+
 // --- Access points ---------------------------------------------------
 
 export const listAccessPoints = () =>

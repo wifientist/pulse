@@ -34,15 +34,38 @@ badge so a target going down on one agent but not others is instantly visible.
   `execve`s itself in place. No systemd dance.
 
 **Wireless visibility**
-- SSID / BSSID / signal captured via `iw dev <iface> link` (no sudo required).
+- SSID / BSSID / signal captured via `iw dev <iface> link` on every poll
+  (no sudo required). Wireless samples are sanitized server-side — readings
+  outside the physically realistic −10 to −100 dBm window are dropped before
+  storage so a single driver glitch can't distort the chart axes.
 - Admin-curated **Access Points** section maps BSSIDs to AP names. Each AP can own
   N BSSIDs — Ruckus-style multi-SSID radios have their full BSSID set attached to
   one entry. Observed-but-unmapped BSSIDs surface in an "Unassigned" list for
-  one-click assignment.
-- Trends page draws a per-(agent, AP) color-segmented signal chart. Line color
-  tracks which AP the client is on, with vertical markers at each roam and a
-  consolidated Roam events list beneath. SSID + BSSID + resolved AP name all
-  shown in the hover tooltip.
+  one-click assignment, populated from both client connections AND monitor-agent
+  airspace scans (so a BSSID nobody connected to still becomes assignable).
+- Trends draws a per-client color-segmented signal chart with vertical roam
+  markers + consolidated Roam events list, plus a "All wireless clients"
+  overlay chart whose hover tooltip surfaces AP name and band badge per
+  client (2.4 / 5 / 6 GHz).
+
+**Airspace monitoring** — a dedicated *monitor-role* agent that doesn't
+participate in the ping mesh and instead runs `iw dev <iface> scan` on every
+poll, reporting every visible BSSID's signal + frequency. Server filters
+incoming scans through an admin-curated **Monitored SSIDs** allowlist before
+storing, so the table stays focused on the networks you care about. Trends
+page gets an Airspace panel per monitor agent with per-band toggle chips
+(2.4 / 5 / 6 GHz) and AP-aware coloring/legend. Monitor agents are
+automatically excluded from the mesh — no pings in or out, no orphan nodes
+on the dashboard.
+
+**Tools** — a framework for one-shot, server-orchestrated infra tests
+that capture pre-run state, drive a sequence of mutations, and restore on
+finish. First tool: **Attenuator**, which integrates with the Ruckus One
+cloud API to ramp AP transmit power on a planned schedule (or jump
+straight to a target with `instant` mode). Use cases: deterministic roam
+tests, drowning out a target AP to validate failover, simulating a noisy
+neighbor. Reusable presets, one-at-a-time runs with crash recovery on
+startup, and per-step audit log including each Ruckus activity ID.
 
 **Trends & deep dives**
 - Historical per-pair time-series (loss / jitter / latency percentiles) with
@@ -58,7 +81,9 @@ badge so a target going down on one agent but not others is instantly visible.
 - Mesh diagram (xyflow + dagre) with drag-to-rearrange nodes, persistent
   per-edge handle choices, one-way edges to passive targets, and an
   "auto-edge" button that re-picks geometrically-sensible edge endpoints
-  without disturbing your node layout.
+  without disturbing your node layout. Bidirectional agent pairs render as
+  a single double-arrow line; hovering surfaces per-direction state + RTT
+  + loss on separate lines.
 - Global filter in the header narrows every page to a single agent (1:n
   focus) or a hand-picked subset.
 
@@ -118,9 +143,14 @@ Pages:
   assignment + DHCP renew + upgrade + boost), **Passive Targets** section,
   enrollment-token mint/revoke.
 - `/trends` — pair-focused historical charts (RTT avg/p50/p95/p99, loss %,
-  jitter) + wireless signal chart when applicable.
+  jitter) + wireless signal chart when applicable + Airspace panel(s) for
+  monitor-role agents (with per-band toggle chips).
 - `/access-points` — BSSID → AP-name mapping with an Unassigned list of
-  observed-but-unmapped BSSIDs.
+  observed-but-unmapped BSSIDs and a **Monitored SSIDs** allowlist for the
+  airspace scanner.
+- `/tools` — landing page for server-orchestrated infra tests.
+- `/tools/attenuator` — Ruckus One AP txPower control with reusable
+  presets, instant or ramped runs, and a live run banner.
 
 ### Dev workflow
 
@@ -147,9 +177,12 @@ docker run -p 8080:8080 -e PULSE_ADMIN_TOKEN=... pulse-server:latest
 
 ## Architecture
 
-- **Server**: Python 3.12, FastAPI, SQLAlchemy 2.0 async, SQLite (WAL), APScheduler.
+- **Server**: Python 3.12, FastAPI, SQLAlchemy 2.0 async, SQLite (WAL),
+  APScheduler. Optional Ruckus One cloud API client for the Attenuator
+  tool — credentials configured per-deployment via env vars.
 - **Agent**: Python 3.12, httpx, icmplib (with subprocess `ping` fallback on Windows
-  / unprivileged containers). Optional `iw` for wireless detail.
+  / unprivileged containers). Optional `iw` for wireless detail and (on
+  monitor-role agents) airspace scanning.
 - **Web**: React 19 + Vite 6 + TypeScript 5 + Tailwind v4 + xyflow + recharts +
   zustand. Single long-lived SSE stream (`/v1/admin/events`) drives all dashboard state.
 - **Transport**: HTTP polling agent→server; SSE push server→UI.
@@ -161,7 +194,8 @@ docker run -p 8080:8080 -e PULSE_ADMIN_TOKEN=... pulse-server:latest
 - Raw ping samples: 48h (`raw_retention_hours`).
 - Minute aggregates: 14 days (`minute_retention_days`).
 - Hour aggregates: kept indefinitely (hundreds of kB per year at home-lab scale).
-- Wireless samples + passive raw: same horizon as agent raw samples.
+- Wireless samples + airspace scan samples + passive raw: same horizon as
+  agent raw samples.
 - Alerts / deep-dive-style sessions / enrollment token plaintext: until manually cleared
   (plaintext is one-shot — see auth above).
 
@@ -180,5 +214,8 @@ pulse/
 
 ## Status
 
-Active development. Recent focus: wireless tracking (SSID/BSSID/signal + AP
-mapping), trends / boost mode, passive targets, test-plane isolation.
+Active development. Recent focus: airspace monitoring (monitor-role
+agents + iw scan + monitored-SSID allowlist), Tools framework with the
+Attenuator (Ruckus One AP control with ramp/instant modes), band-aware
+wireless charts, and dashboard polish (bidi edge consolidation,
+per-direction tooltip).

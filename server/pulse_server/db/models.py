@@ -51,6 +51,10 @@ class Agent(Base):
     approved_at: Mapped[int | None] = mapped_column(Integer, nullable=True)
     last_poll_at: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
     agent_version: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    paused: Mapped[bool] = mapped_column(Boolean, default=False)
+    """Soft-stop: when true, the poll handler returns no peers + no commands +
+    no scan_ifaces, and alerts are suppressed on any pair involving this
+    agent. The agent keeps polling so resume is instantaneous."""
 
 
 class AgentInterface(Base):

@@ -209,8 +209,10 @@ async def handle_poll(
 
     # 2c. Airspace scan results from monitor-role agents. Filter through the
     # monitored_ssids allowlist before persisting so unrelated neighbor APs
-    # don't balloon the table. Hidden SSIDs (ssid=None) are dropped.
-    if body.visible_bssids:
+    # don't balloon the table. Hidden SSIDs (ssid=None) are dropped. Paused
+    # agents shouldn't emit scans either, but if a stale scan is in flight
+    # we still drop it server-side.
+    if body.visible_bssids and not agent.paused:
         allowed = set(
             (
                 await db.execute(select(MonitoredSsid.ssid))
@@ -252,16 +254,23 @@ async def handle_poll(
                 await test_orchestrator.handle_command_result(db, cmd)
 
     # 4. Lease fresh commands. Must happen after step 3 so the same command isn't
-    #    re-leased in the same round-trip it was acknowledged.
-    leased = await command_repo.lease_pending_for_agent(db, agent.id, now_ms=now)
-    for c in leased:
-        await test_orchestrator.handle_command_lease(db, c)
+    #    re-leased in the same round-trip it was acknowledged. Paused agents
+    #    are skipped here (and we also don't ship them peer assignments below)
+    #    so the soft-stop is total: no new pings, no new probes.
+    leased: list = []
+    if not agent.paused:
+        leased = await command_repo.lease_pending_for_agent(db, agent.id, now_ms=now)
+        for c in leased:
+            await test_orchestrator.handle_command_lease(db, c)
 
-    # 5. Peer-assignment versioning.
+    # 5. Peer-assignment versioning. When paused we hand back an empty list so
+    #    the agent's scheduler clears within one poll cycle.
     current_version = await meta_repo.get_int(db, meta_repo.PEER_ASSIGNMENTS_VERSION, 0)
     include_peers = body.peers_version_seen != current_version
     peer_dtos: list[PeerAssignmentDTO] | None = None
-    if include_peers:
+    if agent.paused and include_peers:
+        peer_dtos = []
+    elif include_peers:
         rows = await peer_service.assignments_for_source(db, agent.id)
         # Need target uids to hand back — fetch in one query via ORM relationships is
         # overkill; just select ids → uids here.
@@ -347,17 +356,21 @@ async def handle_poll(
 
     # Collect interface names the admin has flagged role=monitor so the agent
     # knows to scan them. Done before commit so it sees the current state even
-    # if this same poll just upserted the interface.
-    monitor_iface_rows = (
-        await db.execute(
-            select(AgentInterface.iface_name).where(
-                AgentInterface.agent_id == agent.id,
-                AgentInterface.role == "monitor",
-                AgentInterface.iface_name.is_not(None),
+    # if this same poll just upserted the interface. Paused agents get an
+    # empty list so they stop scanning along with everything else.
+    if agent.paused:
+        scan_ifaces: list[str] = []
+    else:
+        monitor_iface_rows = (
+            await db.execute(
+                select(AgentInterface.iface_name).where(
+                    AgentInterface.agent_id == agent.id,
+                    AgentInterface.role == "monitor",
+                    AgentInterface.iface_name.is_not(None),
+                )
             )
-        )
-    ).scalars().all()
-    scan_ifaces = [n for n in monitor_iface_rows if n]
+        ).scalars().all()
+        scan_ifaces = [n for n in monitor_iface_rows if n]
 
     await db.commit()
 

@@ -116,6 +116,12 @@ export function buildMeshGraph(
     if (a.interfaces.some((i) => i.role === "monitor")) continue;
     agentsByUid.set(a.agent_uid, a);
   }
+  // Agent uids that are paused — used for de-emphasized node styling and to
+  // suppress edges (since pings are stopped on either side of the pair).
+  const pausedUids = new Set<string>();
+  for (const a of snapshot.agents) {
+    if (a.paused) pausedUids.add(a.agent_uid);
+  }
 
   const linkMap = new Map<string, LinkStateView>();
   for (const l of snapshot.link_states) {
@@ -184,6 +190,9 @@ export function buildMeshGraph(
 
   const edges: MeshEdgeType[] = [];
   for (const [pairId, pd] of pairs) {
+    // Skip edges where either endpoint is paused — no pings flow, the edge
+    // would just confuse the picture (and link state is frozen anyway).
+    if (pausedUids.has(pd.uidA) || pausedUids.has(pd.uidB)) continue;
     const forward = pd.forward;
     const reverse = pd.reverse;
     const isBidi = !!(forward && reverse);
@@ -258,9 +267,11 @@ export function buildMeshGraph(
       position: { x: 0, y: 0 },
       data: { passive: pt, passive_state: worst },
     });
-    // One directed edge per agent that could ping this target.
+    // One directed edge per agent that could ping this target. Skip paused
+    // agents — they aren't actively pinging passives either.
     for (const a of agentsByUid.values()) {
       if (a.state !== "active") continue;
+      if (a.paused) continue;
       const edgeId = `${a.agent_uid}->${nodeId}`;
       const pls = passiveLinkByKey.get(edgeId);
       const saved2 = savedHandles[edgeId];

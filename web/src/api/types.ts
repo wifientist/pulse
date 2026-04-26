@@ -261,6 +261,7 @@ export interface AgentView {
   agent_version: string | null;
   caps: Record<string, unknown>;
   interfaces: InterfaceView[];
+  paused?: boolean;
 }
 
 export interface PendingEnrollmentView {

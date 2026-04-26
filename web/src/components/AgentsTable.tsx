@@ -2,6 +2,8 @@ import {
   ArrowUpCircle,
   ChevronDown,
   ChevronRight,
+  Pause,
+  Play,
   RefreshCw,
   Zap,
 } from "lucide-react";
@@ -9,6 +11,8 @@ import { Fragment, useEffect, useMemo, useState } from "react";
 
 import {
   cancelBoost,
+  pauseAgent,
+  resumeAgent,
   setInterfaceRole,
   startBoost,
   triggerDhcpRenew,
@@ -183,6 +187,7 @@ export default function AgentsTable() {
   const [upgradingAgent, setUpgradingAgent] = useState<number | null>(null);
   const [boostBusy, setBoostBusy] = useState<number | null>(null);
   const [boostDuration, setBoostDuration] = useState<number>(300);
+  const [pauseBusy, setPauseBusy] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
 
@@ -233,6 +238,26 @@ export default function AgentsTable() {
       setError(e instanceof Error ? e.message : "failed to queue renew");
     } finally {
       setBusy(null);
+    }
+  };
+
+  const onPauseToggle = async (agent: AgentView) => {
+    setError(null);
+    setPauseBusy(agent.id);
+    try {
+      if (agent.paused) {
+        await resumeAgent(agent.id);
+        setNotice(`Resumed ${agent.hostname}`);
+      } else {
+        await pauseAgent(agent.id);
+        setNotice(
+          `Paused ${agent.hostname} — pings will stop within one poll cycle.`,
+        );
+      }
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "pause toggle failed");
+    } finally {
+      setPauseBusy(null);
     }
   };
 
@@ -308,7 +333,13 @@ export default function AgentsTable() {
               const isOpen = !!expanded[a.id];
               return (
                 <Fragment key={a.id}>
-                  <tr className="hover:bg-slate-50">
+                  <tr
+                    className={
+                      a.paused
+                        ? "hover:bg-slate-50 bg-amber-50/40"
+                        : "hover:bg-slate-50"
+                    }
+                  >
                     <td
                       className="w-8 px-2 py-2 text-slate-400 text-center cursor-pointer"
                       onClick={() => toggle(a.id)}
@@ -324,6 +355,11 @@ export default function AgentsTable() {
                       onClick={() => toggle(a.id)}
                     >
                       {a.hostname}
+                      {a.paused ? (
+                        <span className="ml-2 inline-flex items-center gap-0.5 px-1.5 py-0 rounded bg-amber-100 text-amber-800 text-[10px] font-semibold align-middle">
+                          <Pause className="w-2.5 h-2.5" /> paused
+                        </span>
+                      ) : null}
                       <div className="text-xs text-slate-400 font-mono">
                         {a.agent_uid.slice(0, 8)}…
                       </div>
@@ -354,10 +390,37 @@ export default function AgentsTable() {
                       <BoostCell
                         expiresAt={boostByAgent.get(a.id)}
                         busy={boostBusy === a.id}
-                        disabled={a.state !== "active"}
+                        disabled={a.state !== "active" || !!a.paused}
                         durationSecs={boostDuration}
                         onToggle={(isBoosted) => onBoostToggle(a.id, isBoosted)}
                       />
+                      <button
+                        type="button"
+                        onClick={() => onPauseToggle(a)}
+                        disabled={
+                          pauseBusy === a.id || a.state !== "active"
+                        }
+                        title={
+                          a.paused
+                            ? "Resume — agent will start pinging on its next poll"
+                            : "Pause — server stops issuing peers/commands; agent keeps polling"
+                        }
+                        className={
+                          a.paused
+                            ? "inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs text-amber-700 bg-amber-50 hover:bg-amber-100 disabled:opacity-50 ml-2"
+                            : "inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs text-slate-600 hover:bg-slate-100 disabled:opacity-50 ml-2"
+                        }
+                      >
+                        {a.paused ? (
+                          <>
+                            <Play className="w-3 h-3" /> resume
+                          </>
+                        ) : (
+                          <>
+                            <Pause className="w-3 h-3" /> pause
+                          </>
+                        )}
+                      </button>
                       <button
                         type="button"
                         onClick={() => onUpgrade(a)}
