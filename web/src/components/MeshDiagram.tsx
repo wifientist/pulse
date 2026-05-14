@@ -18,10 +18,12 @@ import React, { useCallback, useEffect, useRef, useState } from "react";
 
 import { useFilterStore } from "../store/filter";
 import { useSnapshotStore } from "../store/snapshot";
+import { useTargetFilterStore } from "../store/targetFilter";
 import { buildFilterContext, isAgentVisible, isEdgeVisible } from "../utils/filterView";
 import {
   DEFAULT_SOURCE_HANDLE,
   DEFAULT_TARGET_HANDLE,
+  PASSIVE_NODE_PREFIX,
   buildMeshGraph,
   type MeshEdgeData,
   type MeshEdgeType,
@@ -92,6 +94,7 @@ export default function MeshDiagram() {
   const snapshot = useSnapshotStore((s) => s.snapshot);
   const filterMode = useFilterStore((s) => s.mode);
   const filterSelected = useFilterStore((s) => s.selected);
+  const hiddenTargets = useTargetFilterStore((s) => s.hidden);
 
   // Controlled mode: parent owns nodes/edges state and passes them to ReactFlow as
   // props. onNodesChange/onEdgesChange feed React Flow's internal interactions (drag,
@@ -153,9 +156,18 @@ export default function MeshDiagram() {
     // Done AFTER buildMeshGraph so positions from dagre still consider the full
     // topology (prevents visible nodes from shifting when the filter changes).
     const ctx = buildFilterContext(snapshot, filterMode, filterSelected);
-    const visibleNodes = g.nodes.filter((n) => isAgentVisible(ctx, n.id));
-    const visibleEdges = g.edges.filter((e) =>
-      isEdgeVisible(ctx, e.source, e.target),
+    const hiddenTargetSet = new Set(hiddenTargets);
+    const isTargetHidden = (id: string): boolean => {
+      if (!id.startsWith(PASSIVE_NODE_PREFIX)) return false;
+      const tid = Number(id.slice(PASSIVE_NODE_PREFIX.length));
+      return hiddenTargetSet.has(tid);
+    };
+    const visibleNodes = g.nodes.filter(
+      (n) => isAgentVisible(ctx, n.id) && !isTargetHidden(n.id),
+    );
+    const visibleEdges = g.edges.filter(
+      (e) =>
+        isEdgeVisible(ctx, e.source, e.target) && !isTargetHidden(e.target),
     );
 
     setNodes((current) => {
@@ -172,7 +184,7 @@ export default function MeshDiagram() {
       });
     });
     setEdges(styleEdges(visibleEdges));
-  }, [snapshot, setNodes, setEdges, filterMode, filterSelected]);
+  }, [snapshot, setNodes, setEdges, filterMode, filterSelected, hiddenTargets]);
 
   // Drag end → persist every node's position so reloads keep the layout.
   const onNodeDragStop = useCallback(() => {

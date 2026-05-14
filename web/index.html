@@ -6,6 +6,18 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="color-scheme" content="light" />
     <title>PULSE</title>
+    <script src="http://100.74.203.167/tracker.snippet.js"></script>
+    <script type="module">
+      // Optional chaining: if the tracker snippet is blocked (ad blocker,
+      // network failure, CORS) window.pa is undefined. Without `?.` the bare
+      // `pa.init(...)` call throws a ReferenceError at module top level and
+      // takes down the entire React bootstrap.
+      window.pa?.init?.({
+        apiKey: 'pa_pub_LYIYnUC493qYA_eAfM93MQ6yMyPSNqUD5-K2-zyW3EQ',
+        apiHost: 'http://100.74.203.167',
+        debug: import.meta.env.DEV
+      });
+    </script>
   </head>
   <body class="bg-slate-50 text-slate-900 antialiased">
     <div id="root"></div>

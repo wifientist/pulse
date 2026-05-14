@@ -25,3 +25,6 @@ agent.token
 # Editor
 .vscode/
 .idea/
+
+# Local reference material
+specs/

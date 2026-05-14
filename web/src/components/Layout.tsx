@@ -6,6 +6,7 @@ import { useAuthStore } from "../store/auth";
 import FilterControl from "./FilterControl";
 import LiveIndicator from "./LiveIndicator";
 import ReconnectingBanner from "./ReconnectingBanner";
+import TargetFilterControl from "./TargetFilterControl";
 
 export default function Layout() {
   const clearToken = useAuthStore((s) => s.clearToken);
@@ -79,6 +80,7 @@ export default function Layout() {
           </nav>
           <div className="ml-auto flex items-center gap-4">
             <FilterControl />
+            <TargetFilterControl />
             <LiveIndicator />
             <button
               onClick={onLogout}
